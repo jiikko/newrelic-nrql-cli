@@ -1,8 +1,8 @@
 class Nrql < Formula
   desc "New Relic に NRQL を投げる読み取り専用 CLI（Chrome のログインセッションを利用）"
   homepage "https://github.com/jiikko/newrelic-nrql-cli"
-  url "https://github.com/jiikko/newrelic-nrql-cli/archive/refs/tags/v0.1.2.tar.gz"
-  sha256 "ae8f0420b70ac97577d9a62a6a043f5407648d827891e1330d13fa0ab6614ebd"
+  url "https://github.com/jiikko/newrelic-nrql-cli/archive/refs/tags/v0.1.3.tar.gz"
+  sha256 "0923315208379bec7eca04fd453a8b875c964c34a1f6e6ef691a440b9e12c3a7"
   license "MIT"
   head "https://github.com/jiikko/newrelic-nrql-cli.git", branch: "master"
 
