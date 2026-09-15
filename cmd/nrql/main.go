@@ -20,8 +20,7 @@ import (
 type config struct {
 	accountID int
 	region    string // us / eu（New Relic のデータセンター）
-	browser   string // Chrome / Brave / ...
-	profile   string // Default / Profile 1 / auto
+	profile   string // Default / Profile 1 / auto（Chrome のプロファイル）
 	format    string // tsv / table / json
 	noHeader  bool
 }
@@ -43,7 +42,6 @@ func registerCommon(fs *flag.FlagSet, cfg *config) {
 	fs.IntVar(&cfg.accountID, "account", accountDefault, "New Relic アカウント ID（必須）/ NEW_RELIC_ACCOUNT_ID / config.yml account")
 	fs.IntVar(&cfg.accountID, "a", accountDefault, "-account の別名")
 	fs.StringVar(&cfg.region, "region", resolveDefault("NEW_RELIC_REGION", fc.Region, "us"), "New Relic のデータセンター（us / eu）/ NEW_RELIC_REGION / config.yml region")
-	fs.StringVar(&cfg.browser, "browser", resolveDefault("NRQL_BROWSER", fc.Browser, "Chrome"), "セッションを読むブラウザ（Chrome/Brave/Chromium/Edge/Vivaldi）/ NRQL_BROWSER")
 	fs.StringVar(&cfg.profile, "profile", resolveDefault("NRQL_CHROME_PROFILE", fc.Profile, profileAuto), "ブラウザのプロファイル名。既定 auto（自動検出）/ NRQL_CHROME_PROFILE")
 }
 
@@ -51,7 +49,7 @@ const topUsage = `nrql - New Relic に NRQL を投げる CLI（読み取り専�
 
 概要:
   NRQL クエリを実行して結果を TSV / 表 / JSON で出力する。API キーの発行は不要で、
-  Chrome 等でログイン済みのセッションをそのまま借りる（無人環境では API キーも使える）。
+  Google Chrome でログイン済みのセッションをそのまま借りる（無人環境では API キーも使える）。
 
 使い方:
   nrql [オプション] "<NRQL>"        クエリを実行する（query は省略可）
@@ -65,8 +63,7 @@ const topUsage = `nrql - New Relic に NRQL を投げる CLI（読み取り専�
   -format <fmt>      tsv（既定）/ table / json
   -no-header         TSV のヘッダ行を出さない
   -region <us|eu>    アカウントのデータセンター。既定 us（NEW_RELIC_REGION）
-  -browser <name>    Chrome/Brave/Chromium/Edge/Vivaldi。既定 Chrome（NRQL_BROWSER）
-  -profile <name>    プロファイル。既定 auto=ログイン済みを自動検出（NRQL_CHROME_PROFILE）
+  -profile <name>    Chrome のプロファイル。既定 auto=ログイン済みを自動検出（NRQL_CHROME_PROFILE）
 
 設定の優先順位: コマンドラインフラグ > 環境変数 > config.yml > 既定
   例: nrql config set account 1234567
@@ -85,7 +82,7 @@ const topUsage = `nrql - New Relic に NRQL を投げる CLI（読み取り専�
   nrql -no-header "SELECT uniques(host) FROM Transaction" | sort
 
 注意:
-  これは New Relic の非公開エンドポイントを叩く非公式ツール。アイドルでセッションが切れると
+  これは New Relic の非公開エンドポイントを叩く非公式ツール（macOS + Google Chrome 専用）。アイドルでセッションが切れると
   401/403 になる（ブラウザで開き直せば復帰する）。仕様変更で壊れる可能性があるため、
   CI など無人環境では NEW_RELIC_API_KEY を使うこと。
 `
@@ -100,7 +97,7 @@ const queryHelp = `nrql query - NRQL を実行する
   -a, -account <id>  アカウント ID（必須。nrql accounts で確認できる）
   -format <fmt>      tsv（既定）/ table / json
   -no-header         TSV のヘッダ行を出さない
-  （共通オプション -browser / -profile は nrql --help を参照）
+  （共通オプション -region / -profile は nrql --help を参照）
 
 出力:
   NRQL の結果カラムを SELECT の並び順で出す。FACET 等で行ごとにカラムが欠ける場合は
@@ -118,7 +115,7 @@ const accountsHelp = `nrql accounts - アクセスできるアカウント一覧
 
 オプション:
   -format <fmt>   tsv（既定）/ table / json
-  （共通オプション -browser / -profile は nrql --help を参照）
+  （共通オプション -region / -profile は nrql --help を参照）
 `
 
 const configHelp = `nrql config - 設定ファイル（config.yml）を表示・更新する
@@ -128,7 +125,7 @@ const configHelp = `nrql config - 設定ファイル（config.yml）を表示・
   nrql config set <key> <value> 値を保存する
   nrql config path              設定ファイルのパスを表示
 
-key: account / region / browser / profile
+key: account / region / profile
 
 例:
   nrql config set account 1234567
@@ -300,7 +297,6 @@ func cmdConfig(args []string) error {
 		fmt.Printf("%-10s %s\n", "path:", path)
 		fmt.Printf("%-10s %s\n", "account:", fc.Account)
 		fmt.Printf("%-10s %s\n", "region:", fc.Region)
-		fmt.Printf("%-10s %s\n", "browser:", fc.Browser)
 		fmt.Printf("%-10s %s\n", "profile:", fc.Profile)
 		return nil
 	case "path":
@@ -308,7 +304,7 @@ func cmdConfig(args []string) error {
 		return nil
 	case "set":
 		if len(args) < 3 {
-			return &usageError{"エラー: 使い方: nrql config set <account|region|browser|profile> <値>"}
+			return &usageError{"エラー: 使い方: nrql config set <account|region|profile> <値>"}
 		}
 		fc := loadFileConfig()
 		key, value := args[1], args[2]
@@ -323,15 +319,10 @@ func cmdConfig(args []string) error {
 				return &usageError{"エラー: " + err.Error()}
 			}
 			fc.Region = value
-		case "browser":
-			if _, ok := browserProfiles[value]; !ok {
-				return &usageError{fmt.Sprintf("エラー: 未対応のブラウザ %q（Chrome/Brave/Chromium/Edge/Vivaldi）", value)}
-			}
-			fc.Browser = value
 		case "profile":
 			fc.Profile = value
 		default:
-			return &usageError{fmt.Sprintf("エラー: 不明なキー %q（account / region / browser / profile）", key)}
+			return &usageError{fmt.Sprintf("エラー: 不明なキー %q（account / region / profile）", key)}
 		}
 		if err := saveFileConfig(fc); err != nil {
 			return err

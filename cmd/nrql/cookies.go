@@ -1,7 +1,7 @@
-// Chromium 系ブラウザの Cookie を macOS Keychain 経由で復号して取り出す。
+// Google Chrome の Cookie を macOS Keychain 経由で復号して取り出す。
 //
 // 出典: github.com/jiikko/esa-cli の cmd/esa/cookies.go からの移植（同じ仕組みを
-// New Relic 向けに使う）。仕様（PBKDF2-SHA1 1003 回 / AES-128-CBC / IV=0x20*16 /
+// New Relic 向けに使う。あちらは複数ブラウザ対応だが、こちらは Chrome 専用）。仕様（PBKDF2-SHA1 1003 回 / AES-128-CBC / IV=0x20*16 /
 // Chrome 130+ = meta.version>=24 で復号後の先頭 32 バイトがホストハッシュ）は
 // 両者で共通なので、修正が要る場合は両方に当てること。
 package main
@@ -22,22 +22,22 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// browserProfile はブラウザごとの Keychain エントリと
-// Application Support 配下のディレクトリ名を保持する。
-type browserProfile struct {
-	keychainAccount string // security -a
-	keychainService string // security -s
-	supportSubdir   string // ~/Library/Application Support 配下の相対パス
-}
-
-// サポートするブラウザ。gist の対応表に準拠。
-var browserProfiles = map[string]browserProfile{
-	"Chrome":   {"Chrome", "Chrome Safe Storage", "Google/Chrome"},
-	"Brave":    {"Brave", "Brave Safe Storage", "BraveSoftware/Brave-Browser"},
-	"Chromium": {"Chromium", "Chromium Safe Storage", "Chromium"},
-	"Edge":     {"Microsoft Edge", "Microsoft Edge Safe Storage", "Microsoft Edge"},
-	"Vivaldi":  {"Vivaldi", "Vivaldi Safe Storage", "Vivaldi"},
-}
+// 🚨 このツールは Google Chrome 専用。
+//
+// 移植元の esa-cli は Brave / Chromium / Edge / Vivaldi も対応表に持っているが、
+// ここでは意図的に Chrome だけにしている。理由は、対応表の値（Keychain の
+// サービス名・Application Support 配下のディレクトリ名）は**実機で確認しないと
+// 正しいか分からない**ため。手元で確認できるのは Chrome だけで、未確認の値を
+// 並べると「動くように見えて別ブラウザの領域を読みに行く」形の事故になる。
+//
+// 他のブラウザに広げるなら、実機で `security find-generic-password` と
+// Application Support 配下のディレクトリ名を確認してから足すこと（issue 005）。
+const (
+	chromeKeychainAccount = "Chrome"              // security -a
+	chromeKeychainService = "Chrome Safe Storage" // security -s
+	chromeSupportSubdir   = "Google/Chrome"       // ~/Library/Application Support 配下
+	chromeName            = "Google Chrome"       // エラーメッセージ用の表示名
+)
 
 // cookieEntry は復号済みの 1 Cookie。
 type cookieEntry struct {
@@ -46,22 +46,22 @@ type cookieEntry struct {
 	value string
 }
 
-// getKeychainPassword は Keychain から "<Browser> Safe Storage" のパスワードを取得する。
-func getKeychainPassword(bp browserProfile) ([]byte, error) {
+// getKeychainPassword は Keychain から "Chrome Safe Storage" のパスワードを取得する。
+func getKeychainPassword() ([]byte, error) {
 	cmd := exec.Command("security", "find-generic-password",
 		"-w",
-		"-a", bp.keychainAccount,
-		"-s", bp.keychainService)
+		"-a", chromeKeychainAccount,
+		"-s", chromeKeychainService)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf(
 			"Keychain から暗号化キーを取得できませんでした（service=%q account=%q）。\n"+
 				"  - ターミナルで次を実行し、表示される許可ダイアログで「常に許可」を押してください:\n"+
 				"      security find-generic-password -w -a %q -s %q\n"+
-				"  - 対象ブラウザにログインしているか、ブラウザ種別（-browser / NRQL_BROWSER）が正しいか確認してください。\n"+
+				"  - %s がインストールされているか確認してください（このツールは Chrome 専用です）。\n"+
 				"  元エラー: %w",
-			bp.keychainService, bp.keychainAccount,
-			bp.keychainAccount, bp.keychainService, err)
+			chromeKeychainService, chromeKeychainAccount,
+			chromeKeychainAccount, chromeKeychainService, chromeName, err)
 	}
 	return []byte(strings.TrimRight(string(out), "\n")), nil
 }
@@ -121,13 +121,13 @@ func pkcs7Unpad(data []byte, blockSize int) ([]byte, error) {
 }
 
 // cookieDBSourcePath は Cookie DB の絶対パスを返す（cwd 非依存: HOME 起点）。
-func cookieDBSourcePath(bp browserProfile, profile string) (string, error) {
+func cookieDBSourcePath(profile string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 	// 新しい Chrome は Cookies を Network/ サブディレクトリに置く。両方を候補にする。
-	base := filepath.Join(home, "Library", "Application Support", bp.supportSubdir, profile)
+	base := filepath.Join(home, "Library", "Application Support", chromeSupportSubdir, profile)
 	candidates := []string{
 		filepath.Join(base, "Network", "Cookies"),
 		filepath.Join(base, "Cookies"),
@@ -141,7 +141,7 @@ func cookieDBSourcePath(bp browserProfile, profile string) (string, error) {
 		"Cookie DB が見つかりませんでした（プロファイル=%q）。探した場所:\n  %s\n"+
 			"  - プロファイル名が正しいか確認してください（-profile / NRQL_CHROME_PROFILE）。\n"+
 			"  - ~/Library/Application Support/%s/ 配下のディレクトリ名がプロファイル名です（既定は Default）。",
-		profile, strings.Join(candidates, "\n  "), bp.supportSubdir)
+		profile, strings.Join(candidates, "\n  "), chromeSupportSubdir)
 }
 
 // copyCookieDB は Cookie DB を一時ディレクトリへコピーする。
@@ -180,18 +180,9 @@ func copyCookieDB(src string) (string, func(), error) {
 	return filepath.Join(tmpdir, "Cookies"), cleanup, nil
 }
 
-// extractCookies は指定ブラウザ/プロファイルから全 Cookie を復号して返す。
-func extractCookies(browser, profile string) ([]cookieEntry, error) {
-	bp, ok := browserProfiles[browser]
-	if !ok {
-		names := make([]string, 0, len(browserProfiles))
-		for k := range browserProfiles {
-			names = append(names, k)
-		}
-		return nil, fmt.Errorf("未対応のブラウザ %q（対応: %s）", browser, strings.Join(names, ", "))
-	}
-
-	password, err := getKeychainPassword(bp)
+// extractCookies は指定プロファイルから全 Cookie を復号して返す。
+func extractCookies(profile string) ([]cookieEntry, error) {
+	password, err := getKeychainPassword()
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +191,7 @@ func extractCookies(browser, profile string) ([]cookieEntry, error) {
 		return nil, err
 	}
 
-	src, err := cookieDBSourcePath(bp, profile)
+	src, err := cookieDBSourcePath(profile)
 	if err != nil {
 		return nil, err
 	}

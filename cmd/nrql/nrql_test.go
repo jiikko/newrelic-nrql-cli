@@ -76,7 +76,7 @@ func TestRegionEndpoints(t *testing.T) {
 // ここは実測で確定した組み合わせで、崩すと 401/403 になる。
 func TestAuthModeDeterminesEndpoint(t *testing.T) {
 	us := regions["us"]
-	if c := newCookieClient(us, "SESSION=x", "Chrome", "Default"); c.endpoint != us.session {
+	if c := newCookieClient(us, "SESSION=x", "Default"); c.endpoint != us.session {
 		t.Errorf("ブラウザセッションは UI 側のホストを使うべき: got %s", c.endpoint)
 	}
 	if c := newAPIKeyClient(us, "NRAK-xxx"); c.endpoint != us.apiKey {

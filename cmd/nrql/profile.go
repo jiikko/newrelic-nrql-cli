@@ -17,7 +17,7 @@ const profileAuto = "auto"
 // 優先順位:
 //  1. NEW_RELIC_API_KEY があれば API キー方式（無人環境向け。ブラウザを一切読まない）
 //  2. -profile が明示されていればそのプロファイル
-//  3. auto: New Relic のセッションを持つプロファイルを列挙し、認証が通る最初のものを使う
+//  3. auto: New Relic のセッションを持つ Chrome プロファイルを列挙し、認証が通る最初のものを使う
 func resolveClient(cfg config) (*client, error) {
 	ep, err := regionEndpoints(cfg.region)
 	if err != nil {
@@ -31,18 +31,13 @@ func resolveClient(cfg config) (*client, error) {
 		return nil, err
 	}
 	if cfg.profile != "" && cfg.profile != profileAuto {
-		return cookieClientForProfile(ep, host, cfg.browser, cfg.profile)
+		return cookieClientForProfile(ep, host, cfg.profile)
 	}
 
-	bp, ok := browserProfiles[cfg.browser]
-	if !ok {
-		return nil, fmt.Errorf("未対応のブラウザ %q", cfg.browser)
-	}
-
-	profiles := listBrowserProfiles(bp)
+	profiles := listChromeProfiles()
 	var candidates []*client
 	for _, p := range profiles {
-		c, err := cookieClientForProfile(ep, host, cfg.browser, p)
+		c, err := cookieClientForProfile(ep, host, p)
 		if err != nil {
 			continue // New Relic のセッションが無い / DB が無いプロファイルは飛ばす
 		}
@@ -52,11 +47,11 @@ func resolveClient(cfg config) (*client, error) {
 	switch len(candidates) {
 	case 0:
 		return nil, fmt.Errorf(
-			"%s のセッションを持つ %s プロファイルが見つかりませんでした。\n"+
-				"  対象ブラウザ（-browser / NRQL_BROWSER）で https://%s にログインしているか確認してください。\n"+
+			"%s のセッションを持つ %s のプロファイルが見つかりませんでした。\n"+
+				"  %s で https://%s にログインしているか確認してください。\n"+
 				"  リージョンが EU のアカウントなら -region eu が要ります（既定は us）。\n"+
 				"  CI など無人環境では NEW_RELIC_API_KEY に User API key を設定してください。",
-			host, cfg.browser, host)
+			host, chromeName, chromeName, host)
 	case 1:
 		return candidates[0], nil
 	}
@@ -73,13 +68,13 @@ func resolveClient(cfg config) (*client, error) {
 	return nil, fmt.Errorf(
 		"New Relic のセッションを持つプロファイルは %d 件ありましたが、いずれも認証が通りませんでした。\n"+
 			"  %s で https://%s を開き直してログイン状態にしてから再実行してください。",
-		len(candidates), cfg.browser, host)
+		len(candidates), chromeName, host)
 }
 
 // cookieClientForProfile は指定プロファイルのセッションでクライアントを作る。
 // New Relic 宛てのものが 1 つも無ければエラー（自動検出時は次の候補へ進む合図）。
-func cookieClientForProfile(ep endpoints, host, browser, profile string) (*client, error) {
-	entries, err := extractCookies(browser, profile)
+func cookieClientForProfile(ep endpoints, host, profile string) (*client, error) {
+	entries, err := extractCookies(profile)
 	if err != nil {
 		return nil, err
 	}
@@ -87,20 +82,20 @@ func cookieClientForProfile(ep endpoints, host, browser, profile string) (*clien
 	if n == 0 {
 		return nil, fmt.Errorf("%s のセッションがプロファイル %q にありません", host, profile)
 	}
-	return newCookieClient(ep, header, browser, profile), nil
+	return newCookieClient(ep, header, profile), nil
 }
 
-// listBrowserProfiles は Local State からプロファイルのディレクトリ名を列挙する。
+// listChromeProfiles は Chrome の Local State からプロファイルのディレクトリ名を列挙する。
 // 読み取れない場合は実在するディレクトリを走査する。
-func listBrowserProfiles(bp browserProfile) []string {
+func listChromeProfiles() []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return []string{"Default"}
 	}
-	lsPath := filepath.Join(home, "Library", "Application Support", bp.supportSubdir, "Local State")
+	lsPath := filepath.Join(home, "Library", "Application Support", chromeSupportSubdir, "Local State")
 	data, err := os.ReadFile(lsPath)
 	if err != nil {
-		return fallbackProfiles(home, bp)
+		return fallbackProfiles(home)
 	}
 	// info_cache のキー（プロファイルのディレクトリ名）だけを取り出す。他のフィールドは読まない。
 	var ls struct {
@@ -110,7 +105,7 @@ func listBrowserProfiles(bp browserProfile) []string {
 		} `json:"profile"`
 	}
 	if err := json.Unmarshal(data, &ls); err != nil || len(ls.Profile.InfoCache) == 0 {
-		return fallbackProfiles(home, bp)
+		return fallbackProfiles(home)
 	}
 	profiles := make([]string, 0, len(ls.Profile.InfoCache))
 	for dir := range ls.Profile.InfoCache {
@@ -130,8 +125,8 @@ func listBrowserProfiles(bp browserProfile) []string {
 }
 
 // fallbackProfiles は Local State が読めないときに、実在するディレクトリを走査する。
-func fallbackProfiles(home string, bp browserProfile) []string {
-	base := filepath.Join(home, "Library", "Application Support", bp.supportSubdir)
+func fallbackProfiles(home string) []string {
+	base := filepath.Join(home, "Library", "Application Support", chromeSupportSubdir)
 	entries, err := os.ReadDir(base)
 	if err != nil {
 		return []string{"Default"}

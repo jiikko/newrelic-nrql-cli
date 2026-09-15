@@ -90,17 +90,15 @@ type client struct {
 	endpoint string
 	cookie   string // authCookie のとき: Cookie ヘッダ値
 	apiKey   string // authAPIKey のとき: User API key
-	profile  string // 診断メッセージ用（どのブラウザプロファイル由来か）
-	browser  string // 診断メッセージ用（Chrome / Brave / ...）
+	profile  string // 診断メッセージ用（どの Chrome プロファイル由来か）
 }
 
-func newCookieClient(ep endpoints, cookieHeader, browser, profile string) *client {
+func newCookieClient(ep endpoints, cookieHeader, profile string) *client {
 	return &client{
 		http:     &http.Client{Timeout: 60 * time.Second},
 		mode:     authCookie,
 		endpoint: ep.session,
 		cookie:   cookieHeader,
-		browser:  browser,
 		profile:  profile,
 	}
 }
@@ -120,17 +118,16 @@ func newAPIKeyClient(ep endpoints, key string) *client {
 type errSessionExpired struct {
 	status  int
 	profile string
-	browser string // Chrome / Brave / ...（案内文に出す）
 	host    string // one.newrelic.com / one.eu.newrelic.com
 }
 
 func (e *errSessionExpired) Error() string {
 	msg := fmt.Sprintf(
-		"セッションが無効です（HTTP %d / %s のプロファイル %q）。\n"+
+		"セッションが無効です（HTTP %d / Chrome のプロファイル %q）。\n"+
 			"  New Relic はアイドル時間でセッションが切れます。%s で https://%s を\n"+
 			"  開き直してログイン状態にしてから、もう一度実行してください。\n"+
 			"  無人環境（CI 等）では NEW_RELIC_API_KEY に User API key を設定してください。",
-		e.status, e.browser, e.profile, e.browser, e.host)
+		e.status, e.profile, chromeName, e.host)
 	if e.status == http.StatusForbidden {
 		// 403 は 2 つの原因を持つ。実験で確認済み（2026-09-15）:
 		// requestingServicesHeader を送らずに実行すると、ログイン済みでも 403 になった。
@@ -195,7 +192,6 @@ func (c *client) graphQL(document string, out any) error {
 		return &errSessionExpired{
 			status:  resp.StatusCode,
 			profile: c.profile,
-			browser: c.browser,
 			host:    hostOf(c.endpoint),
 		}
 	case http.StatusTooManyRequests:

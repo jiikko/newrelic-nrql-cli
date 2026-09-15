@@ -2,8 +2,10 @@
 
 New Relic に NRQL を投げる読み取り専用 CLI（コマンド名 `nrql`）。
 
-**API キーの発行が要りません。** ログイン済みのブラウザ（Chrome 等）のセッションをそのまま借ります。
+**API キーの発行が要りません。** ログイン済みの Google Chrome のセッションをそのまま借ります。
 CI など無人環境では User API key にも切り替えられます。
+
+**macOS + Google Chrome 専用です。**
 
 ```console
 $ nrql "SELECT count(*) FROM Transaction SINCE 30 minutes ago"
@@ -27,13 +29,14 @@ go install github.com/jiikko/newrelic-nrql-cli/cmd/nrql@latest
 **Go 1.24 以上が必要です**（標準ライブラリの `crypto/pbkdf2` を使うため。それ以前の Go では
 ビルドできません）。
 
-macOS 専用です（ブラウザの保存領域を macOS Keychain 経由で復号するため。
-`security` コマンドと `~/Library/Application Support` 配下のパスに依存しています）。
-`NEW_RELIC_API_KEY` を使う経路はブラウザを読まないので、他 OS でも動く見込みですが**未検証**です。
+**macOS + Google Chrome 専用**です（Chrome の保存領域を macOS Keychain 経由で復号するため。
+`security` コマンドと `~/Library/Application Support/Google/Chrome` に依存しています）。
+Brave / Chromium / Edge / Vivaldi には対応していません（`issues/005`）。
+`NEW_RELIC_API_KEY` を使う経路は Chrome を読まないので他 OS でも動く見込みですが**未検証**です。
 
 ## セットアップ
 
-1. Chrome で <https://one.newrelic.com> にログインしておく
+1. Google Chrome で <https://one.newrelic.com> にログインしておく
 2. アカウント ID を確認して保存する
 
 ```console
@@ -71,7 +74,7 @@ nrql config set region eu
 nrql [オプション] "<NRQL>"        # クエリ実行（query サブコマンドは省略可）
 nrql query [オプション] "<NRQL>"  # 同上（明示形）
 nrql accounts                     # アクセスできるアカウント一覧
-nrql config show|set|path         # 設定（key: account / region / browser / profile）
+nrql config show|set|path         # 設定（key: account / region / profile）
 nrql help                         # ヘルプ
 ```
 
@@ -85,8 +88,7 @@ nrql help                         # ヘルプ
 | `-format <fmt>` | `tsv`（既定） / `table` / `json` |
 | `-no-header` | TSV のヘッダ行を出さない |
 | `-region <us\|eu>` | アカウントのデータセンター（既定 `us`） |
-| `-browser <name>` | `Chrome` / `Brave` / `Chromium` / `Edge` / `Vivaldi`（既定 `Chrome`） |
-| `-profile <name>` | プロファイル名。既定 `auto`（ログイン済みを自動検出） |
+| `-profile <name>` | Chrome のプロファイル名。既定 `auto`（ログイン済みを自動検出） |
 
 設定の優先順位: **コマンドラインフラグ > 環境変数 > `config.yml` > 既定**
 
@@ -95,7 +97,7 @@ nrql help                         # ヘルプ
 | `NEW_RELIC_ACCOUNT_ID` | 既定のアカウント ID |
 | `NEW_RELIC_REGION` | `us` / `eu`（既定 `us`） |
 | `NEW_RELIC_API_KEY` | User API key。設定するとブラウザを読まず公開 NerdGraph を使う（CI 向け） |
-| `NRQL_BROWSER` / `NRQL_CHROME_PROFILE` | ブラウザ / プロファイル |
+| `NRQL_CHROME_PROFILE` | Chrome のプロファイル名 |
 
 設定ファイルは `$XDG_CONFIG_HOME/newrelic-nrql-cli/config.yml`（既定 `~/.config/newrelic-nrql-cli/config.yml`）。
 
@@ -135,9 +137,9 @@ go vet ./...
 go test ./...
 ```
 
-ブラウザの保存領域を復号する部分（`cmd/nrql/cookies.go`）は
-[jiikko/esa-cli](https://github.com/jiikko/esa-cli) からの移植です。仕様が共通なので、
-修正が要る場合は両方に当ててください。
+Chrome の保存領域を復号する部分（`cmd/nrql/cookies.go`）は
+[jiikko/esa-cli](https://github.com/jiikko/esa-cli) からの移植です（あちらは複数ブラウザ対応、
+こちらは Chrome 専用）。復号の仕様は共通なので、そこを直す場合は両方に当ててください。
 
 ## ライセンス
 

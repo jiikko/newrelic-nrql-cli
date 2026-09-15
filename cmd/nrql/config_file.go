@@ -13,8 +13,7 @@ import (
 type fileConfig struct {
 	Account string `yaml:"account,omitempty"` // 既定のアカウント ID
 	Region  string `yaml:"region,omitempty"`  // us / eu
-	Browser string `yaml:"browser,omitempty"`
-	Profile string `yaml:"profile,omitempty"`
+	Profile string `yaml:"profile,omitempty"` // Chrome のプロファイル名
 }
 
 // configDir は $XDG_CONFIG_HOME/newrelic-nrql-cli（無ければ ~/.config/newrelic-nrql-cli）。
@@ -80,7 +79,7 @@ func saveFileConfig(fc fileConfig) error {
 	header := "# newrelic-nrql-cli 設定ファイル（nrql config set で更新できます）\n" +
 		"# account: 既定のアカウント ID（nrql accounts で調べられます）\n" +
 		"# region: アカウントのデータセンター（us / eu）\n" +
-		"# browser: Chrome/Brave/Chromium/Edge/Vivaldi / profile: プロファイル名（auto で自動検出）\n"
+		"# profile: Chrome のプロファイル名（auto でログイン済みを自動検出）\n"
 	return os.WriteFile(filepath.Join(dir, "config.yml"), append([]byte(header), data...), 0o600)
 }
 

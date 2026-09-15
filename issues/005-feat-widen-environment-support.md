@@ -3,15 +3,21 @@
 公開リポジトリとして「自分の環境でしか動かない」部分を潰すための棚卸し。
 どれも今すぐ困ってはいないので、要望か実害が出たら着手する。
 
-## ブラウザの対応表
+## ブラウザ: Google Chrome 専用にしてある（決定済み）
 
-`cmd/nrql/cookies.go` の `browserProfiles` は Chrome / Brave / Chromium / Edge / Vivaldi の
-5 つだけ。**Arc・Chrome Beta / Canary・Opera は未対応**。
+対応表は `cmd/nrql/cookies.go` の chrome* 定数のみ。Brave / Chromium / Edge / Vivaldi /
+Arc / Chrome Beta・Canary / Opera は**意図的に未対応**。
 
-- 追加には「Keychain のサービス名 / アカウント名」と「Application Support 配下のディレクトリ名」の
-  2 つが要る。**推測で書かない**（間違えると Keychain の取得に失敗するだけでなく、
-  別ブラウザの領域を読みに行く）。実機で `security find-generic-password` を確認してから足す
-- Firefox は仕組みが違う（Keychain を使わない）ので、対応するなら別実装
+理由: 対応表の値（Keychain のサービス名・Application Support 配下のディレクトリ名）は
+実機で確認しないと正しいか分からず、未確認の値を並べると「動くように見えて別ブラウザの
+領域を読みに行く」形の事故になる。手元で確認できるのは Chrome だけ。
+
+広げるときの手順（推測で書かないこと）:
+
+1. 対象ブラウザで New Relic にログインする
+2. `security find-generic-password -w -a <account> -s "<Browser> Safe Storage"` が通ることを確認
+3. `~/Library/Application Support/` 配下の実ディレクトリ名を確認
+4. 上記 2 つを確認した値だけを定数に足す（Firefox は Keychain を使わないので別実装が要る）
 
 ## HTTP タイムアウト
 
