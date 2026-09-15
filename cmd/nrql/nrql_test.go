@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // NRQL を GraphQL ドキュメントへ埋め込むときのエスケープを固定する。
@@ -84,5 +86,68 @@ func TestAuthModeDeterminesEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(us.session, "one.newrelic.com") || !strings.Contains(us.apiKey, "api.newrelic.com") {
 		t.Errorf("エンドポイントが入れ替わっている: session=%s apikey=%s", us.session, us.apiKey)
+	}
+}
+
+// アカウント ID の既定値の決まり方を固定する（環境変数 > config.yml > 未設定）。
+//
+// 壊れた環境変数を黙って 0 に落とすと「アカウント ID が未設定です」と誤案内してしまい、
+// 「値が壊れている」ことに利用者が気づけない。警告を出して config.yml 側へ退くのが正。
+func TestResolveAccountDefault(t *testing.T) {
+	cases := []struct {
+		name     string
+		env      string
+		file     int
+		want     int
+		wantWarn bool
+	}{
+		{name: "環境変数が config より優先", env: "222", file: 111, want: 222},
+		{name: "環境変数が無ければ config", env: "", file: 111, want: 111},
+		{name: "どちらも無ければ未設定", env: "", file: 0, want: 0},
+		{name: "壊れた環境変数は警告して config へ退く", env: "abc", file: 111, want: 111, wantWarn: true},
+		{name: "壊れた環境変数で config も無ければ未設定", env: "abc", file: 0, want: 0, wantWarn: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, warn := resolveAccountDefault(c.env, c.file)
+			if got != c.want {
+				t.Errorf("アカウント ID: got %d, want %d", got, c.want)
+			}
+			if (warn != "") != c.wantWarn {
+				t.Errorf("警告の有無が違う: warn=%q, wantWarn=%v", warn, c.wantWarn)
+			}
+		})
+	}
+}
+
+// config.yml の account が「数値」「文字列」の両方で読めることを固定する。
+//
+// v0.1.0 は文字列として書き出していた（account: "1577598"）。int だけを受ける実装に
+// すると、その設定ファイルは解析に失敗し、account だけでなく region / profile まで
+// 丸ごと無視される（実測で踏んだ）。
+func TestFileConfigAcceptsAccountAsIntAndString(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want int
+	}{
+		{name: "数値", yaml: "account: 1234567\nregion: us\n", want: 1234567},
+		{name: "文字列（v0.1.0 が書いた形）", yaml: "account: \"1234567\"\nregion: us\n", want: 1234567},
+		{name: "空文字列", yaml: "account: \"\"\nregion: us\n", want: 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var fc fileConfig
+			if err := yaml.Unmarshal([]byte(c.yaml), &fc); err != nil {
+				t.Fatalf("解析に失敗: %v", err)
+			}
+			if int(fc.Account) != c.want {
+				t.Errorf("account: got %d, want %d", int(fc.Account), c.want)
+			}
+			// account の解析で失敗すると、同じファイルの他の項目まで失われる。
+			if fc.Region != "us" {
+				t.Errorf("region が失われている: got %q", fc.Region)
+			}
+		})
 	}
 }

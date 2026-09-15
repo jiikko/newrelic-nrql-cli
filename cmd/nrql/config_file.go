@@ -4,16 +4,49 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
 )
 
+// accountID は config.yml の account 値。
+//
+// 🚨 数値と文字列の両方を受ける。v0.1.0 は文字列として書き出していた
+// （`account: "1577598"`）ため、int だけを受ける実装にすると古い設定ファイルの
+// 解析がそこで失敗し、**account だけでなく region / profile まで丸ごと無視される**。
+// 書き出しは常に数値（この型の underlying type が int なので）。
+type accountID int
+
+func (a *accountID) UnmarshalYAML(value *yaml.Node) error {
+	var n int
+	if err := value.Decode(&n); err == nil {
+		*a = accountID(n)
+		return nil
+	}
+	var str string
+	if err := value.Decode(&str); err != nil {
+		return fmt.Errorf("account は数値で書いてください: %w", err)
+	}
+	str = strings.TrimSpace(str)
+	if str == "" {
+		*a = 0
+		return nil
+	}
+	n, err := strconv.Atoi(str)
+	if err != nil {
+		return fmt.Errorf("account を数値として解釈できません: %q", str)
+	}
+	*a = accountID(n)
+	return nil
+}
+
 // fileConfig は config.yml の内容。すべて任意項目。
 type fileConfig struct {
-	Account string `yaml:"account,omitempty"` // 既定のアカウント ID
-	Region  string `yaml:"region,omitempty"`  // us / eu
-	Profile string `yaml:"profile,omitempty"` // Chrome のプロファイル名
+	Account accountID `yaml:"account,omitempty"` // 既定のアカウント ID
+	Region  string    `yaml:"region,omitempty"`  // us / eu
+	Profile string    `yaml:"profile,omitempty"` // Chrome のプロファイル名
 }
 
 // configDir は $XDG_CONFIG_HOME/newrelic-nrql-cli（無ければ ~/.config/newrelic-nrql-cli）。
@@ -93,4 +126,21 @@ func resolveDefault(envKey, fileValue, builtin string) string {
 		return fileValue
 	}
 	return builtin
+}
+
+// resolveAccountDefault はアカウント ID の既定値を「環境変数 > config.yml > 0（未設定）」で決める。
+//
+// 環境変数だけは文字列で届くので、ここで数値に直す。数値でない値は黙って 0 に落とさず
+// 警告つきで無視する（0 に落とすと「アカウント ID が未設定です」と誤案内してしまい、
+// 実際には「値が壊れている」ことに気づけない）。
+// 戻り値の warn が空でなければ、呼び出し側が利用者へ表示する。
+func resolveAccountDefault(envValue string, fileValue int) (account int, warn string) {
+	if envValue != "" {
+		n, err := strconv.Atoi(envValue)
+		if err != nil {
+			return fileValue, fmt.Sprintf("警告: アカウント ID %q を数値として解釈できません（無視します）", envValue)
+		}
+		return n, ""
+	}
+	return fileValue, ""
 }

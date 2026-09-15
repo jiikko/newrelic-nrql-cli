@@ -29,15 +29,9 @@ type config struct {
 // 既定値は「環境変数 > config.yml > 組み込み既定」で解決し、-flag の明示指定が最優先になる。
 func registerCommon(fs *flag.FlagSet, cfg *config) {
 	fc := loadFileConfig()
-	account := resolveDefault("NEW_RELIC_ACCOUNT_ID", fc.Account, "")
-	accountDefault := 0
-	if account != "" {
-		n, err := strconv.Atoi(account)
-		if err != nil {
-			// 黙って 0 に落とすと「アカウント ID が未設定です」と誤案内してしまう。
-			fmt.Fprintf(os.Stderr, "警告: アカウント ID %q を数値として解釈できません（無視します）\n", account)
-		}
-		accountDefault = n
+	accountDefault, warn := resolveAccountDefault(os.Getenv("NEW_RELIC_ACCOUNT_ID"), int(fc.Account))
+	if warn != "" {
+		fmt.Fprintln(os.Stderr, warn)
 	}
 	fs.IntVar(&cfg.accountID, "account", accountDefault, "New Relic アカウント ID（必須）/ NEW_RELIC_ACCOUNT_ID / config.yml account")
 	fs.IntVar(&cfg.accountID, "a", accountDefault, "-account の別名")
@@ -295,7 +289,7 @@ func cmdConfig(args []string) error {
 	case "show":
 		fc := loadFileConfig()
 		fmt.Printf("%-10s %s\n", "path:", path)
-		fmt.Printf("%-10s %s\n", "account:", fc.Account)
+		fmt.Printf("%-10s %s\n", "account:", formatAccount(int(fc.Account)))
 		fmt.Printf("%-10s %s\n", "region:", fc.Region)
 		fmt.Printf("%-10s %s\n", "profile:", fc.Profile)
 		return nil
@@ -310,10 +304,11 @@ func cmdConfig(args []string) error {
 		key, value := args[1], args[2]
 		switch key {
 		case "account":
-			if _, err := strconv.Atoi(value); err != nil {
-				return &usageError{fmt.Sprintf("エラー: account は数値のアカウント ID です: %q", value)}
+			n, err := strconv.Atoi(value)
+			if err != nil || n <= 0 {
+				return &usageError{fmt.Sprintf("エラー: account は正の整数のアカウント ID です: %q", value)}
 			}
-			fc.Account = value
+			fc.Account = accountID(n)
 		case "region":
 			if _, err := regionEndpoints(value); err != nil {
 				return &usageError{"エラー: " + err.Error()}
@@ -332,6 +327,14 @@ func cmdConfig(args []string) error {
 	default:
 		return &usageError{fmt.Sprintf("エラー: 不明なサブコマンド %q\n\n%s", args[0], configHelp)}
 	}
+}
+
+// formatAccount は config show 用にアカウント ID を文字列化する（未設定は空欄）。
+func formatAccount(id int) string {
+	if id <= 0 {
+		return ""
+	}
+	return strconv.Itoa(id)
 }
 
 func validateFormat(f string) error {
