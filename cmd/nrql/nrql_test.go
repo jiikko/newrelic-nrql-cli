@@ -122,7 +122,7 @@ func TestResolveAccountDefault(t *testing.T) {
 
 // config.yml の account が「数値」「文字列」の両方で読めることを固定する。
 //
-// v0.1.0 は文字列として書き出していた（account: "1577598"）。int だけを受ける実装に
+// v0.1.0 は文字列として書き出していた（account: "1234567"）。int だけを受ける実装に
 // すると、その設定ファイルは解析に失敗し、account だけでなく region / profile まで
 // 丸ごと無視される（実測で踏んだ）。
 func TestFileConfigAcceptsAccountAsIntAndString(t *testing.T) {

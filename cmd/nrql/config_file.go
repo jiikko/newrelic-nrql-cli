@@ -14,7 +14,7 @@ import (
 // accountID は config.yml の account 値。
 //
 // 🚨 数値と文字列の両方を受ける。v0.1.0 は文字列として書き出していた
-// （`account: "1577598"`）ため、int だけを受ける実装にすると古い設定ファイルの
+// （`account: "1234567"`）ため、int だけを受ける実装にすると古い設定ファイルの
 // 解析がそこで失敗し、**account だけでなく region / profile まで丸ごと無視される**。
 // 書き出しは常に数値（この型の underlying type が int なので）。
 type accountID int
