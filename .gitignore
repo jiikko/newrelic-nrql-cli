@@ -1,0 +1,9 @@
+# ビルド生成物
+/nrql
+/dist/
+*.test
+*.out
+# エディタ/OS
+.DS_Store
+# セッション中の作業ファイル
+/tmp/
