@@ -16,8 +16,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 
 	_ "modernc.org/sqlite"
 )
@@ -144,14 +148,170 @@ func cookieDBSourcePath(profile string) (string, error) {
 		profile, strings.Join(candidates, "\n  "), chromeSupportSubdir)
 }
 
+// --- 一時コピーの後始末 ---
+//
+// 🚨 「必ず消す」を defer だけに任せない。Go の既定ではシグナル（Ctrl-C）で
+// プロセスが即終了して defer が走らず、Chrome の Cookie DB の完全なコピーが
+// $TMPDIR に残る。macOS のフルディスクアクセスで守られた領域の中身を、
+// 守られていない場所へ置き去りにすることになる。
+//
+// 3 段構え（段ごとにテストを持つ。cookies_cleanup_test.go）:
+//  ① defer による即時削除 — 正常終了・エラー・panic を覆う
+//  ② シグナル（SIGINT/SIGTERM/SIGHUP）を捕まえ、登録済みの削除を実行してから終了する
+//  ③ ②でも間に合わない終わり方（SIGKILL・強制終了・電源断）に備え、起動時に
+//     「自分が作った親ディレクトリ直下」「名前が <pid>-… の形」「その pid が生きていない」の
+//     3 条件をすべて満たすものだけを消す
+//
+// ③ は破壊的操作なので、条件に合わないものは一切触らない（母集合を広げない）。
+
+var (
+	cleanupMu    sync.Mutex
+	cleanupPaths = map[string]struct{}{}
+)
+
+// registerCleanup は「プロセスが終わる前に消すべきパス」を登録する（②が使う）。
+func registerCleanup(path string) {
+	cleanupMu.Lock()
+	defer cleanupMu.Unlock()
+	cleanupPaths[path] = struct{}{}
+}
+
+// runAllCleanups は登録済みのパスをすべて削除する。
+// ①の defer と②のシグナル経路の両方から呼ばれるが、os.RemoveAll は冪等なので二重呼び出しは無害。
+func runAllCleanups() {
+	cleanupMu.Lock()
+	paths := make([]string, 0, len(cleanupPaths))
+	for p := range cleanupPaths {
+		paths = append(paths, p)
+	}
+	cleanupPaths = map[string]struct{}{}
+	cleanupMu.Unlock()
+	for _, p := range paths {
+		_ = os.RemoveAll(p)
+	}
+}
+
+// installCleanupOnSignal は②を仕掛ける。main の先頭で 1 回だけ呼ぶ。
+func installCleanupOnSignal() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		sig := <-ch
+		runAllCleanups()
+		if s, ok := sig.(syscall.Signal); ok {
+			os.Exit(128 + int(s)) // シェルの慣習（SIGINT=130 / SIGTERM=143）
+		}
+		os.Exit(1)
+	}()
+}
+
+// cookieTempRoot は一時コピーの親ディレクトリ。
+// 自分だけが作る固定パスにすることで、③の掃除対象を「この配下」に閉じ込める。
+func cookieTempRoot() string {
+	return filepath.Join(os.TempDir(), "nrql-cookie")
+}
+
+// ensureCookieTempRoot は親ディレクトリを 0700 で用意する。
+// 他人が用意した同名のディレクトリ・シンボリックリンクだった場合は使わずに失敗する
+// （その配下を消しに行くのは③なので、所有者の確認をここで済ませる）。
+func ensureCookieTempRoot() (string, error) {
+	root := cookieTempRoot()
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	fi, err := os.Lstat(root)
+	if err != nil {
+		return "", err
+	}
+	if !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("一時ディレクトリが通常のディレクトリではありません: %s", root)
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
+		return "", fmt.Errorf("一時ディレクトリの所有者が自分ではありません: %s", root)
+	}
+	return root, nil
+}
+
+// sweepStaleCookieDirs は③。過去の実行が SIGKILL 等で残したものだけを消す。
+// 条件に 1 つでも合わなければ触らない（判断できないものは残す方へ倒す）。
+func sweepStaleCookieDirs() {
+	root := cookieTempRoot()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return // 親ディレクトリが無ければ何もしない
+	}
+	self := os.Getpid()
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue // ディレクトリ以外は対象外
+		}
+		pid, ok := pidFromTempDirName(e.Name())
+		if !ok || pid == self {
+			// 名前の形が違う / 自分のものは触らない。
+			// 🚨 この !ok と processAlive の pid<=0 ガードは現状「互いを覆う」冗長な関係にある
+			//（形が違う → pid 0 → 判定不能 → 消さない）。片方を外す変異は素通りするので、
+			// 外すときは「もう片方が本当に同じものを守るか」を確かめること。意図的に両方残す。
+			continue
+		}
+		if processAlive(pid) {
+			continue // 生きているプロセスのものは触らない（並行実行）
+		}
+		_ = os.RemoveAll(filepath.Join(root, e.Name()))
+	}
+}
+
+// pidFromTempDirName は "<pid>-<乱数>" 形式のディレクトリ名から pid を取り出す。
+// この形式でないものは対象外（false を返す）。
+func pidFromTempDirName(name string) (int, bool) {
+	i := strings.IndexByte(name, '-')
+	if i <= 0 {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(name[:i])
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
+}
+
+// processAlive は pid のプロセスが生きているかを返す。
+// 判断できないとき（権限が無い等）は「生きている」に倒す = 消さない方へ倒す。
+//
+// 🚨 os.FindProcess + Process.Signal を使わないこと。消えたプロセスに対して
+// ESRCH ではなく os.ErrProcessDone を返すため、ESRCH だけを見る判定は
+// 「常に生きている」に落ちて掃除が 1 件も走らなくなる（実測で踏んだ）。
+// kill(2) を直接呼び、errno をそのまま判定する。
+func processAlive(pid int) bool {
+	// 🚨 pid 0 / 負値を kill(2) に渡さない。0 は「自分のプロセスグループ全体」、
+	// 負値は「プロセスグループ指定」を意味し、生死判定にならない（成功して
+	// 「生きている」に見える）。ここでは判定不能として扱い、消さない方へ倒す。
+	if pid <= 0 {
+		return true
+	}
+	err := syscall.Kill(pid, 0)
+	if err == nil {
+		return true // シグナルを送れた = 生きている
+	}
+	if errors.Is(err, syscall.ESRCH) {
+		return false // そんなプロセスは無い = 死んでいる
+	}
+	return true // EPERM 等、判断できないときは消さない
+}
+
 // copyCookieDB は Cookie DB を一時ディレクトリへコピーする。
 // WAL に未反映のセッション Cookie を取りこぼさないよう、-wal / -shm も同名でコピーする。
 // 返り値: 一時 DB パスと後始末関数。
 func copyCookieDB(src string) (string, func(), error) {
-	tmpdir, err := os.MkdirTemp("", "nrql-cookie-")
+	root, err := ensureCookieTempRoot()
 	if err != nil {
 		return "", nil, err
 	}
+	// ディレクトリ名に pid を埋める（③がこれを見て「生きていない実行の残骸」を判定する）。
+	tmpdir, err := os.MkdirTemp(root, fmt.Sprintf("%d-", os.Getpid()))
+	if err != nil {
+		return "", nil, err
+	}
+	registerCleanup(tmpdir)
 	cleanup := func() { os.RemoveAll(tmpdir) }
 
 	for _, suffix := range []string{"", "-wal", "-shm"} {
@@ -182,6 +342,8 @@ func copyCookieDB(src string) (string, func(), error) {
 
 // extractCookies は指定プロファイルから全 Cookie を復号して返す。
 func extractCookies(profile string) ([]cookieEntry, error) {
+	sweepStaleCookieDirs() // ③: 前回の実行が強制終了で残したものを先に片付ける
+
 	password, err := getKeychainPassword()
 	if err != nil {
 		return nil, err
