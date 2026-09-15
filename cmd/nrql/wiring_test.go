@@ -26,6 +26,8 @@ func TestCleanupIsWiredIntoProductionPaths(t *testing.T) {
 	}{
 		{"main", "installCleanupOnSignal", "シグナル経路の後始末（層②）が仕掛けられない"},
 		{"extractCookies", "sweepStaleCookieDirs", "前回の残骸の掃除（層③）が走らない"},
+		{"cmdQuery", "checkNoTrailingFlags", "クエリの後ろに置かれたフラグが NRQL 本文に吸収される"},
+		{"cmdConfig", "fileConfigProblem", "壊れた config.yml を黙って上書きしてしまう"},
 	}
 
 	fset := token.NewFileSet()

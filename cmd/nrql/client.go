@@ -93,9 +93,28 @@ type client struct {
 	profile  string // 診断メッセージ用（どの Chrome プロファイル由来か）
 }
 
+// newHTTPClient は共通の HTTP クライアントを作る。
+//
+// 🚨 CheckRedirect で 3xx を追わない。Go の既定はリダイレクトを追うが、そのとき
+// 資格情報が持ち越される（実測）:
+//   - Cookie: 別ドメインへは剥がれるが、**https→http のダウングレードでは剥がれない**
+//     （stdlib はホスト名しか比較せず scheme を見ない）。セッションが平文で線に乗る
+//   - Api-Key: stdlib の機微ヘッダ列挙に無いので**別ドメインへもそのまま送られる**
+//
+// GraphQL の POST が 3xx を追う正当な理由は無い（301/302/303 は本文の無い GET に
+// 変換されるので応答も無意味）。追わずに 3xx をそのまま受け取り、下の分岐で扱う。
+func newHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 60 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 func newCookieClient(ep endpoints, cookieHeader, profile string) *client {
 	return &client{
-		http:     &http.Client{Timeout: 60 * time.Second},
+		http:     newHTTPClient(),
 		mode:     authCookie,
 		endpoint: ep.session,
 		cookie:   cookieHeader,
@@ -105,7 +124,7 @@ func newCookieClient(ep endpoints, cookieHeader, profile string) *client {
 
 func newAPIKeyClient(ep endpoints, key string) *client {
 	return &client{
-		http:     &http.Client{Timeout: 60 * time.Second},
+		http:     newHTTPClient(),
 		mode:     authAPIKey,
 		endpoint: ep.apiKey,
 		apiKey:   key,
@@ -116,9 +135,10 @@ func newAPIKeyClient(ep endpoints, key string) *client {
 // New Relic はアイドルでセッションが切れる（login_idle_session_timeout Cookie）ので、
 // これは異常ではなく日常的に起きる。
 type errSessionExpired struct {
-	status  int
-	profile string
-	host    string // one.newrelic.com / one.eu.newrelic.com
+	status   int
+	profile  string
+	host     string // one.newrelic.com / one.eu.newrelic.com
+	redirect string // 3xx のとき Location ヘッダ（ログインページへ飛ばされた証拠）
 }
 
 func (e *errSessionExpired) Error() string {
@@ -128,6 +148,9 @@ func (e *errSessionExpired) Error() string {
 			"  開き直してログイン状態にしてから、もう一度実行してください。\n"+
 			"  無人環境（CI 等）では NEW_RELIC_API_KEY に User API key を設定してください。",
 		e.status, e.profile, chromeName, e.host)
+	if e.redirect != "" {
+		msg += fmt.Sprintf("\n  ログインページへリダイレクトされました（%s）。追従はしていません。", e.redirect)
+	}
 	if e.status == http.StatusForbidden {
 		// 403 は 2 つの原因を持つ。実験で確認済み（2026-09-15）:
 		// requestingServicesHeader を送らずに実行すると、ログイン済みでも 403 になった。
@@ -180,10 +203,24 @@ func (c *client) graphQL(document string, out any) error {
 		return err
 	}
 
-	switch resp.StatusCode {
-	case http.StatusOK:
+	switch {
+	case resp.StatusCode == http.StatusOK:
 		// 本文検査へ
-	case http.StatusUnauthorized, http.StatusForbidden:
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		// 🚨 追わずにここで扱う。セッションが切れると New Relic は 302 でログインページへ
+		// 飛ばすので、追ってしまうと最終ステータスが 200 になり「JSON として解釈できません」
+		// という的外れな診断になる（実測）。リダイレクトされた時点でセッション切れ扱いにする。
+		if c.mode == authAPIKey {
+			return fmt.Errorf("予期しないリダイレクト（HTTP %d → %s）。エンドポイントが変わった可能性があります",
+				resp.StatusCode, resp.Header.Get("Location"))
+		}
+		return &errSessionExpired{
+			status:   resp.StatusCode,
+			profile:  c.profile,
+			host:     hostOf(c.endpoint),
+			redirect: resp.Header.Get("Location"),
+		}
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		if c.mode == authAPIKey {
 			return fmt.Errorf("API キーが拒否されました（HTTP %d）。NEW_RELIC_API_KEY が User API key か確認してください", resp.StatusCode)
 		}
@@ -194,7 +231,7 @@ func (c *client) graphQL(document string, out any) error {
 			profile: c.profile,
 			host:    hostOf(c.endpoint),
 		}
-	case http.StatusTooManyRequests:
+	case resp.StatusCode == http.StatusTooManyRequests:
 		return fmt.Errorf("レート制限（429）。しばらく待って再実行してください")
 	default:
 		return fmt.Errorf("予期しないステータス %d: %s\n%s", resp.StatusCode, c.endpoint, truncate(string(body), 500))

@@ -70,8 +70,44 @@ func columnsOf(rows []resultRow) []string {
 	return cols
 }
 
+// sanitizeForTerminal は端末へ出す 1 セルぶんの文字列を無害化する。
+//
+// 🚨 3 レンダラのうち TSV の値だけが置換を持っていたため、
+//   - table は改行を潰さず、1 行が複数行に割れて表が崩れる（New Relic Logs の
+//     スタックトレースは複数行が普通なので、最も自然な用途で起きる）
+//   - TSV / table のどちらも ANSI エスケープを素通しし、サーバが返した
+//     バイト列が端末のタイトル書き換え・画面消去・色の残留を起こす
+//   - TSV のヘッダ（カラム名）は無検査で、タブを含むと列数が合わなくなる
+//
+// という 3 つが同時に成立していた（いずれも実測）。出口を 1 箇所に寄せる。
+//
+// タブ・改行・復帰は空白へ、それ以外の C0 制御文字と DEL は落とす。
+// JSON 出力はこれを通さない（encoding/json が \uXXXX へエスケープするため無害で、
+// 機械可読性のために生の値を保つ方がよい）。
+func sanitizeForTerminal(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\t' || r == '\n' || r == '\r':
+			b.WriteRune(' ')
+		case r < 0x20 || r == 0x7f:
+			// ESC を含む C0 制御文字と DEL は落とす（端末を操作させない）
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // cell は 1 セルの表示文字列。キーが無い行は空文字にする。
+// 戻り値は端末向けに無害化済み（renderTSV / renderTable はこれをそのまま出せる）。
 func (r resultRow) cell(col string) string {
+	return sanitizeForTerminal(r.rawCell(col))
+}
+
+// rawCell は無害化前の値（renderJSON など、生値が要る側が使う）。
+func (r resultRow) rawCell(col string) string {
 	v, ok := r.values[col]
 	if !ok || v == nil {
 		return ""
@@ -100,21 +136,29 @@ func renderTSV(w io.Writer, rows []resultRow, header bool) error {
 		return nil
 	}
 	if header {
-		if _, err := fmt.Fprintln(w, strings.Join(cols, "\t")); err != nil {
+		if _, err := fmt.Fprintln(w, strings.Join(sanitizeAll(cols), "\t")); err != nil {
 			return err
 		}
 	}
 	for _, r := range rows {
 		cells := make([]string, len(cols))
 		for i, c := range cols {
-			// TSV を壊さないよう、値中のタブ・改行は空白へ潰す。
-			cells[i] = strings.NewReplacer("\t", " ", "\n", " ", "\r", " ").Replace(r.cell(c))
+			cells[i] = r.cell(c) // cell() が無害化済み
 		}
 		if _, err := fmt.Fprintln(w, strings.Join(cells, "\t")); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// sanitizeAll はカラム名の一覧を無害化する。
+func sanitizeAll(cols []string) []string {
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = sanitizeForTerminal(c)
+	}
+	return out
 }
 
 // tableGap は表のカラム間の空き。
@@ -132,9 +176,12 @@ func renderTable(w io.Writer, rows []resultRow) error {
 		return nil
 	}
 
+	// 表示用のカラム名は無害化するが、値を引くキーは元のままでなければならない。
+	shown := sanitizeAll(cols)
+
 	// 各カラムの表示幅を、ヘッダと全セルの最大値で決める。
 	widths := make([]int, len(cols))
-	for i, c := range cols {
+	for i, c := range shown {
 		widths[i] = displayWidth(c)
 	}
 	cells := make([][]string, 0, len(rows))
@@ -151,7 +198,7 @@ func renderTable(w io.Writer, rows []resultRow) error {
 
 	header := make([]string, len(cols))
 	seps := make([]string, len(cols))
-	for i, c := range cols {
+	for i, c := range shown {
 		header[i] = c
 		seps[i] = strings.Repeat("-", displayWidth(c))
 	}

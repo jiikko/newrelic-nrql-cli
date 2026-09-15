@@ -20,23 +20,21 @@ import (
 type accountID int
 
 func (a *accountID) UnmarshalYAML(value *yaml.Node) error {
-	var n int
-	if err := value.Decode(&n); err == nil {
-		*a = accountID(n)
-		return nil
+	// 🚨 value.Decode(&int) に任せない。YAML 1.1 の暗黙変換により
+	//   account: 0123456 → 42798（8 進）/ 0x1F → 31 / 1.5e7 → 15000000
+	// と、**書いた数字と違うアカウント**を警告なしに引く（実測）。
+	// 生のスカラー文字列を 10 進として読み、それ以外は受け付けない。
+	if value.Kind != yaml.ScalarNode {
+		return fmt.Errorf("account はスカラー値で書いてください")
 	}
-	var str string
-	if err := value.Decode(&str); err != nil {
-		return fmt.Errorf("account は数値で書いてください: %w", err)
-	}
-	str = strings.TrimSpace(str)
-	if str == "" {
+	raw := strings.TrimSpace(value.Value)
+	if raw == "" || raw == "null" || raw == "~" {
 		*a = 0
 		return nil
 	}
-	n, err := strconv.Atoi(str)
+	n, err := strconv.Atoi(raw)
 	if err != nil {
-		return fmt.Errorf("account を数値として解釈できません: %q", str)
+		return fmt.Errorf("account を 10 進の整数として解釈できません: %q", raw)
 	}
 	*a = accountID(n)
 	return nil
@@ -73,7 +71,14 @@ func configFilePath() (string, error) {
 var (
 	fileConfigOnce   sync.Once
 	fileConfigCached fileConfig
+	fileConfigErr    error // 解析に失敗したときの理由（config set はこれを見て書き込みを拒む）
 )
+
+// fileConfigProblem は config.yml の解析に失敗していればその理由を返す。
+func fileConfigProblem() error {
+	loadFileConfig()
+	return fileConfigErr
+}
 
 // loadFileConfig は config.yml を読む（無ければゼロ値）。プロセス内で 1 回だけ読む。
 func loadFileConfig() fileConfig {
@@ -86,14 +91,41 @@ func loadFileConfig() fileConfig {
 		if err != nil {
 			return
 		}
-		var fc fileConfig
-		if err := yaml.Unmarshal(data, &fc); err != nil {
-			fmt.Fprintf(os.Stderr, "警告: %s の解析に失敗しました（無視します）: %v\n", path, err)
-			return
+		fc, err := parseFileConfig(data)
+		if err != nil {
+			fileConfigErr = fmt.Errorf("%s の解析に失敗しました: %w", path, err)
+			fmt.Fprintf(os.Stderr, "警告: %v\n", fileConfigErr)
+			if fc.Region != "" || fc.Profile != "" {
+				fmt.Fprintf(os.Stderr, "  （region / profile は読めたのでそのまま使います）\n")
+			}
 		}
 		fileConfigCached = fc
 	})
 	return fileConfigCached
+}
+
+// parseFileConfig は config.yml の中身を解釈する。
+//
+// 🚨 解析に失敗しても、読めた項目は返す。account の書式が不正なだけで
+// region / profile まで失うと、利用者が気づかないまま別リージョンへ繋ぎに行く
+// （issues/004 の症状を設定ファイル側から作ることになる）。
+// 戻り値の error は「この設定ファイルは完全には読めていない」という事実で、
+// config set はこれを見て上書きを拒む。
+func parseFileConfig(data []byte) (fileConfig, error) {
+	var fc fileConfig
+	err := yaml.Unmarshal(data, &fc)
+	if err == nil {
+		return fc, nil
+	}
+	// account を除いてもう一度読む（読めるものは救う）。
+	var partial struct {
+		Region  string `yaml:"region,omitempty"`
+		Profile string `yaml:"profile,omitempty"`
+	}
+	if err2 := yaml.Unmarshal(data, &partial); err2 == nil {
+		return fileConfig{Region: partial.Region, Profile: partial.Profile}, err
+	}
+	return fileConfig{}, err
 }
 
 // saveFileConfig は config.yml を書き出す（ディレクトリごと作成）。

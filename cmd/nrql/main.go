@@ -184,6 +184,25 @@ type usageError struct{ msg string }
 
 func (e *usageError) Error() string { return e.msg }
 
+// checkNoTrailingFlags は「クエリの後ろに置かれたフラグ」を検出する。
+//
+// `nrql "SELECT ..." -format json` と書くと flag パッケージはそこで解析を止め、
+// -format json が NRQL 本文に吸収される。そのままでは New Relic 側の構文エラーとして
+// 返るため、原因がフラグの位置だと分からない（実測）。
+// NRQL は SELECT / FROM 等で始まるので、`-` で始まる語が残るのは正当な形ではない。
+func checkNoTrailingFlags(args []string) error {
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") && a != "-" {
+			return &usageError{fmt.Sprintf(
+				"エラー: %q はフラグとして解釈されませんでした（NRQL 本文の一部になっています）。\n"+
+					"  フラグは NRQL より前に置いてください。\n"+
+					"  正: nrql %s \"<NRQL>\"\n"+
+					"  誤: nrql \"<NRQL>\" %s", a, a, a)}
+		}
+	}
+	return nil
+}
+
 // requireAccount はアカウント ID が未設定なら使い方エラーを返す。
 func (c config) requireAccount() error {
 	if c.accountID <= 0 {
@@ -219,6 +238,9 @@ func cmdQuery(args []string) error {
 	// `nrql -region eu accounts` のように、サブコマンドをフラグの後ろに書くと
 	// flag パッケージはそこで解析を止め、"accounts" が NRQL 本体として残る。
 	// 黙って NRQL 構文エラーにすると原因が分からないので、ここで気づかせる。
+	if err := checkNoTrailingFlags(fs.Args()); err != nil {
+		return err
+	}
 	if _, ok := subcommands[query]; ok || query == "help" {
 		return &usageError{fmt.Sprintf(
 			"エラー: %q はサブコマンドです。フラグより前に置いてください。\n"+
@@ -300,6 +322,14 @@ func cmdConfig(args []string) error {
 		fmt.Println(path)
 		return nil
 	case "set":
+		// 🚨 読めなかったファイルを「読めたこと」にして上書きしない。
+		// 以前は解析に失敗しても警告だけ出してゼロ値から書き直しており、
+		// 例えば region: eu が黙って消えた（実測）。消えたことに気づく手段が無い。
+		if err := fileConfigProblem(); err != nil {
+			return &usageError{fmt.Sprintf(
+				"エラー: 設定ファイルを読めないため書き込みを中止しました。\n  %v\n"+
+					"  ファイルを直すか削除してから、もう一度実行してください: %s", err, path)}
+		}
 		if len(args) < 3 {
 			return &usageError{"エラー: 使い方: nrql config set <account|region|profile> <値>"}
 		}
