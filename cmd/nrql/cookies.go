@@ -121,6 +121,14 @@ func pkcs7Unpad(data []byte, blockSize int) ([]byte, error) {
 	if pad == 0 || pad > blockSize || pad > len(data) {
 		return nil, errors.New("PKCS7: パディングが不正です")
 	}
+	// 🚨 最終バイトだけでなく、パディング全体が同じ値であることを確かめる。
+	// 最終バイトしか見ない実装は 1,2,3,4 のような不正なパディングを通し、
+	// 復号結果の末尾にゴミが残った Cookie 値をそのまま送ることになる。
+	for _, b := range data[len(data)-pad:] {
+		if int(b) != pad {
+			return nil, errors.New("PKCS7: パディングバイトが揃っていません")
+		}
+	}
 	return data[:len(data)-pad], nil
 }
 
