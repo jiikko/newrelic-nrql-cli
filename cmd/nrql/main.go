@@ -235,6 +235,25 @@ func (c config) requireAccount() error {
 	return nil
 }
 
+// parseArgs は Parse の結果を 3 つに分ける。
+//
+//   - --help: 明示的な要求なので **stdout** へ出して正常終了する（パイプで読める）
+//   - フラグの誤り: usage は stderr（stdout に混ざるとパイプが壊れる）。rc=2
+//   - 正常: そのまま続行
+//
+// flag.ExitOnError だとこの分岐がプロセスの外で決まってしまい、
+// 終了コードの決定（exitCodeFor）もテストも通らない。
+func parseArgs(fs *flag.FlagSet, help string, args []string) (helpRequested bool, err error) {
+	if e := fs.Parse(args); e != nil {
+		if errors.Is(e, flag.ErrHelp) {
+			fmt.Fprint(os.Stdout, help)
+			return true, nil
+		}
+		return false, &usageError{"エラー: " + e.Error()}
+	}
+	return false, nil
+}
+
 func newFlagSet(name, help string, cfg *config) *flag.FlagSet {
 	// 🚨 ExitOnError にしない。フラグの誤りでプロセスごと落ちると、
 	// 終了コードの決定が exitCodeFor を通らず、テストからも呼べない。
@@ -250,8 +269,8 @@ func newFlagSet(name, help string, cfg *config) *flag.FlagSet {
 func cmdQuery(args []string) error {
 	var cfg config
 	fs := newFlagSet("query", queryHelp, &cfg)
-	if err := fs.Parse(args); err != nil {
-		return &usageError{"エラー: " + err.Error()}
+	if done, err := parseArgs(fs, queryHelp, args); err != nil || done {
+		return err
 	}
 
 	query := strings.TrimSpace(strings.Join(fs.Args(), " "))
@@ -299,8 +318,8 @@ func cmdQuery(args []string) error {
 func cmdAccounts(args []string) error {
 	var cfg config
 	fs := newFlagSet("accounts", accountsHelp, &cfg)
-	if err := fs.Parse(args); err != nil {
-		return &usageError{"エラー: " + err.Error()}
+	if done, err := parseArgs(fs, accountsHelp, args); err != nil || done {
+		return err
 	}
 
 	if err := validateFormat(cfg.format); err != nil {
