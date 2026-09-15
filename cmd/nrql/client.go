@@ -106,18 +106,21 @@ type client struct {
 //
 // GraphQL の POST が 3xx を追う正当な理由は無い（301/302/303 は本文の無い GET に
 // 変換されるので応答も無意味）。追わずに 3xx をそのまま受け取り、下の分岐で扱う。
-func newHTTPClient() *http.Client {
+func newHTTPClient(timeoutSeconds int) *http.Client {
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = defaultTimeoutSeconds
+	}
 	return &http.Client{
-		Timeout: 60 * time.Second,
+		Timeout: time.Duration(timeoutSeconds) * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
 }
 
-func newCookieClient(ep endpoints, cookieHeader, profile string) *client {
+func newCookieClient(ep endpoints, cookieHeader, profile string, timeoutSeconds int) *client {
 	return &client{
-		http:     newHTTPClient(),
+		http:     newHTTPClient(timeoutSeconds),
 		mode:     authCookie,
 		endpoint: ep.session,
 		cookie:   cookieHeader,
@@ -125,9 +128,9 @@ func newCookieClient(ep endpoints, cookieHeader, profile string) *client {
 	}
 }
 
-func newAPIKeyClient(ep endpoints, key string) *client {
+func newAPIKeyClient(ep endpoints, key string, timeoutSeconds int) *client {
 	return &client{
-		http:     newHTTPClient(),
+		http:     newHTTPClient(timeoutSeconds),
 		mode:     authAPIKey,
 		endpoint: ep.apiKey,
 		apiKey:   key,

@@ -31,20 +31,20 @@ func resolveClient(cfg config) (*client, error) {
 		return nil, err
 	}
 	if key := os.Getenv("NEW_RELIC_API_KEY"); key != "" {
-		return newAPIKeyClient(ep, key), nil
+		return newAPIKeyClient(ep, key, cfg.timeout), nil
 	}
 	host, err := ep.sessionHost()
 	if err != nil {
 		return nil, err
 	}
 	if cfg.profile != "" && cfg.profile != profileAuto {
-		return cookieClientForProfile(ep, host, cfg.profile)
+		return cookieClientForProfile(ep, host, cfg.profile, cfg.timeout)
 	}
 
 	profiles := listChromeProfiles()
 	var candidates []*client
 	for _, p := range profiles {
-		c, err := cookieClientForProfile(ep, host, p)
+		c, err := cookieClientForProfile(ep, host, p, cfg.timeout)
 		if err != nil {
 			continue // New Relic のセッションが無い / DB が無いプロファイルは飛ばす
 		}
@@ -89,7 +89,7 @@ func pickAuthenticatedClient(candidates []*client, host string) (*client, error)
 
 // cookieClientForProfile は指定プロファイルのセッションでクライアントを作る。
 // New Relic 宛てのものが 1 つも無ければエラー（自動検出時は次の候補へ進む合図）。
-func cookieClientForProfile(ep endpoints, host, profile string) (*client, error) {
+func cookieClientForProfile(ep endpoints, host, profile string, timeoutSeconds int) (*client, error) {
 	entries, err := extractCookiesFn(profile)
 	if err != nil {
 		return nil, err
@@ -98,7 +98,7 @@ func cookieClientForProfile(ep endpoints, host, profile string) (*client, error)
 	if n == 0 {
 		return nil, fmt.Errorf("%s のセッションがプロファイル %q にありません", host, profile)
 	}
-	return newCookieClient(ep, header, profile), nil
+	return newCookieClient(ep, header, profile, timeoutSeconds), nil
 }
 
 // listChromeProfiles は Chrome の Local State からプロファイルのディレクトリ名を列挙する。

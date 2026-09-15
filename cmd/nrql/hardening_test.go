@@ -30,7 +30,7 @@ func TestClientDoesNotFollowRedirects(t *testing.T) {
 	})
 
 	us := regions["us"]
-	c := newCookieClient(us, "session=SECRET", "Default")
+	c := newCookieClient(us, "session=SECRET", "Default", 0)
 	c.http.Transport = rt
 
 	err := c.ping()
@@ -98,7 +98,7 @@ func TestRunNRQLDistinguishesMissingAccountFromEmptyResult(t *testing.T) {
 			defer srv.Close()
 
 			cl := &client{http: srv.Client(), endpoint: srv.URL, mode: authCookie}
-			rows, err := cl.runNRQL(1234567, "SELECT count(*) FROM T")
+			rows, err := cl.runNRQL([]int{1234567}, "SELECT count(*) FROM T")
 			if c.wantErr {
 				if err == nil {
 					t.Fatalf("エラーになるべきだが rows=%d err=nil（「0 件」に化けている）", len(rows))

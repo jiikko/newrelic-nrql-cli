@@ -160,6 +160,26 @@ func resolveDefault(envKey, fileValue, builtin string) string {
 	return builtin
 }
 
+// defaultTimeoutSeconds は 1 リクエストの上限（秒）。
+// 広い TIMESERIES や FACET を投げると 60 秒では足りないことがあるので -timeout で伸ばせる。
+const defaultTimeoutSeconds = 60
+
+// resolveIntDefault は環境変数から正の整数の既定値を読む。
+// 不正な値は黙って既定へ落とさず、警告してから既定を使う
+// （黙って落とすと「設定したのに効いていない」ことに気づけない）。
+func resolveIntDefault(envKey string, builtin int) int {
+	v := os.Getenv(envKey)
+	if v == "" {
+		return builtin
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		fmt.Fprintf(os.Stderr, "警告: %s=%q は正の整数ではありません（既定の %d 秒を使います）\n", envKey, v, builtin)
+		return builtin
+	}
+	return n
+}
+
 // resolveAccountDefault はアカウント ID の既定値を「環境変数 > config.yml > 0（未設定）」で決める。
 //
 // 環境変数だけは文字列で届くので、ここで数値に直す。数値でない値は黙って 0 に落とさず

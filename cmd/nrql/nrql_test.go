@@ -13,7 +13,7 @@ import (
 // 素朴な文字列連結だとドキュメントが壊れる、または注入になる。
 func TestBuildNRQLDocumentEscapesQuotes(t *testing.T) {
 	query := `SELECT count(*) FROM Log WHERE message LIKE '%"boom"%' AND path = 'C:\tmp'`
-	doc := buildNRQLDocument(1234567, query)
+	doc := buildNRQLDocument([]int{1234567}, query)
 
 	if !strings.Contains(doc, "account(id: 1234567)") {
 		t.Fatalf("アカウント ID が埋まっていない: %s", doc)
@@ -78,10 +78,10 @@ func TestRegionEndpoints(t *testing.T) {
 // ここは実測で確定した組み合わせで、崩すと 401/403 になる。
 func TestAuthModeDeterminesEndpoint(t *testing.T) {
 	us := regions["us"]
-	if c := newCookieClient(us, "SESSION=x", "Default"); c.endpoint != us.session {
+	if c := newCookieClient(us, "SESSION=x", "Default", 0); c.endpoint != us.session {
 		t.Errorf("ブラウザセッションは UI 側のホストを使うべき: got %s", c.endpoint)
 	}
-	if c := newAPIKeyClient(us, "NRAK-xxx"); c.endpoint != us.apiKey {
+	if c := newAPIKeyClient(us, "NRAK-xxx", 0); c.endpoint != us.apiKey {
 		t.Errorf("API キーは公開 NerdGraph を使うべき: got %s", c.endpoint)
 	}
 	if !strings.Contains(us.session, "one.newrelic.com") || !strings.Contains(us.apiKey, "api.newrelic.com") {

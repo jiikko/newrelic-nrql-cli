@@ -29,10 +29,12 @@ go install github.com/jiikko/newrelic-nrql-cli/cmd/nrql@latest
 **Go 1.24 以上が必要です**（標準ライブラリの `crypto/pbkdf2` を使うため。それ以前の Go では
 ビルドできません）。
 
-**macOS + Google Chrome 専用**です（Chrome の保存領域を macOS Keychain 経由で復号するため。
-`security` コマンドと `~/Library/Application Support/Google/Chrome` に依存しています）。
-Brave / Chromium / Edge / Vivaldi には対応していません（`issues/005`）。
-`NEW_RELIC_API_KEY` を使う経路は Chrome を読まないので他 OS でも動く見込みですが**未検証**です。
+**macOS + Google Chrome 専用です**（方針として固定しています。`issues/done/005` 参照）。
+Chrome の保存領域を macOS Keychain 経由で復号するため、`security` コマンドと
+`~/Library/Application Support/Google/Chrome` に依存します。
+Brave / Chromium / Edge / Vivaldi / Arc などには対応しません。
+`NEW_RELIC_API_KEY` を使う経路は Chrome を読まないので他 OS でも動く見込みですが、
+**未検証でサポート対象外**です。
 
 ## セットアップ
 
@@ -83,11 +85,12 @@ nrql help                         # ヘルプ
 
 | オプション | 説明 |
 |---|---|
-| `-a`, `-account <id>` | アカウント ID |
+| `-a`, `-account <id>` | アカウント ID。カンマ区切りで複数指定可（`-a 123,456`） |
 | `-format <fmt>` | `tsv`（既定） / `table` / `json` |
 | `-no-header` | TSV のヘッダ行を出さない |
 | `-region <us\|eu>` | アカウントのデータセンター（既定 `us`） |
 | `-profile <name>` | Chrome のプロファイル名。既定 `auto`（ログイン済みを自動検出） |
+| `-timeout <秒>` | 1 リクエストの上限秒数。既定 `60`。広い `TIMESERIES` / `FACET` で伸ばす |
 
 設定の優先順位: **コマンドラインフラグ > 環境変数 > `config.yml` > 既定**
 
@@ -97,8 +100,27 @@ nrql help                         # ヘルプ
 | `NEW_RELIC_REGION` | `us` / `eu`（既定 `us`） |
 | `NEW_RELIC_API_KEY` | User API key。設定するとブラウザを読まず公開 NerdGraph を使う（CI 向け） |
 | `NRQL_CHROME_PROFILE` | Chrome のプロファイル名 |
+| `NRQL_TIMEOUT` | 1 リクエストの上限秒数（既定 60） |
 
 設定ファイルは `$XDG_CONFIG_HOME/newrelic-nrql-cli/config.yml`（既定 `~/.config/newrelic-nrql-cli/config.yml`）。
+
+### 複数アカウントをまとめて見る
+
+`-a` はカンマ区切りで複数のアカウントを受けます。結果は**合算**されます。
+
+```console
+nrql -a 1234567,2345678 "SELECT count(*) FROM Transaction SINCE 1 hour ago"
+```
+
+アカウント別に割りたいときは **`FACET tags.accountId`** を使ってください
+（`FACET accountId` は 0 件になります。`accountId` はイベントの属性ではないため）。
+
+```console
+nrql -a 1234567,2345678 -format table \
+  "SELECT count(*) FROM Transaction FACET tags.accountId SINCE 1 hour ago"
+```
+
+指定したうちの 1 つでも権限が無いと**クエリ全体が失敗**します（部分的な結果は返りません）。
 
 ### 出力
 
@@ -126,7 +148,6 @@ nrql -format json "SELECT average(duration) FROM Transaction TIMESERIES" | jq '.
 - 読み取り専用です。書き込み系の NerdGraph mutation は実装していません
 - **アカウントは NRQL の `WHERE` では切り替えられません**。`accountId` はイベントの属性ではなく
   「どのデータストアを見るか」というスコープなので、`-a` で外から渡す必要があります
-  （複数アカウントの同時クエリは未実装。`issues/003` 参照）
 
 ## 開発
 

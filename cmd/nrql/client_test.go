@@ -25,7 +25,7 @@ func TestGraphQLSendsRequiredHeaders(t *testing.T) {
 		{
 			name: "ブラウザセッション",
 			newClient: func(srv *httptest.Server) *client {
-				c := newCookieClient(regions["us"], "session=SECRET", "Default")
+				c := newCookieClient(regions["us"], "session=SECRET", "Default", 0)
 				c.http = srv.Client()
 				c.endpoint = srv.URL
 				return c
@@ -41,7 +41,7 @@ func TestGraphQLSendsRequiredHeaders(t *testing.T) {
 		{
 			name: "API キー",
 			newClient: func(srv *httptest.Server) *client {
-				c := newAPIKeyClient(regions["us"], "NRAK-SECRET")
+				c := newAPIKeyClient(regions["us"], "NRAK-SECRET", 0)
 				c.http = srv.Client()
 				c.endpoint = srv.URL
 				return c

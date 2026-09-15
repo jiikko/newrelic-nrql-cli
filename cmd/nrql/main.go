@@ -19,11 +19,13 @@ import (
 
 // config は解決済みの実行設定。
 type config struct {
-	accountID int
-	region    string // us / eu（New Relic のデータセンター）
-	profile   string // Default / Profile 1 / auto（Chrome のプロファイル）
-	format    string // tsv / table / json
-	noHeader  bool
+	accountSpec string // -a に渡された生の文字列（"123" / "123,456"）
+	accountIDs  []int  // 解析済み
+	region      string // us / eu（New Relic のデータセンター）
+	profile     string // Default / Profile 1 / auto（Chrome のプロファイル）
+	timeout     int    // 1 リクエストの上限秒数
+	format      string // tsv / table / json
+	noHeader    bool
 }
 
 // registerCommon は全サブコマンド共通のフラグを登録する。
@@ -34,9 +36,14 @@ func registerCommon(fs *flag.FlagSet, cfg *config) {
 	if warn != "" {
 		fmt.Fprintln(os.Stderr, warn)
 	}
-	fs.IntVar(&cfg.accountID, "account", accountDefault, "New Relic アカウント ID（必須）/ NEW_RELIC_ACCOUNT_ID / config.yml account")
-	fs.IntVar(&cfg.accountID, "a", accountDefault, "-account の別名")
+	def := ""
+	if accountDefault > 0 {
+		def = strconv.Itoa(accountDefault)
+	}
+	fs.StringVar(&cfg.accountSpec, "account", def, "New Relic アカウント ID（必須）。カンマ区切りで複数指定可 / NEW_RELIC_ACCOUNT_ID / config.yml account")
+	fs.StringVar(&cfg.accountSpec, "a", def, "-account の別名")
 	fs.StringVar(&cfg.region, "region", resolveDefault("NEW_RELIC_REGION", fc.Region, "us"), "New Relic のデータセンター（us / eu）/ NEW_RELIC_REGION / config.yml region")
+	fs.IntVar(&cfg.timeout, "timeout", resolveIntDefault("NRQL_TIMEOUT", defaultTimeoutSeconds), "1 リクエストの上限秒数（既定 60）/ NRQL_TIMEOUT")
 	fs.StringVar(&cfg.profile, "profile", resolveDefault("NRQL_CHROME_PROFILE", fc.Profile, profileAuto), "ブラウザのプロファイル名。既定 auto（自動検出）/ NRQL_CHROME_PROFILE")
 }
 
@@ -54,10 +61,11 @@ const topUsage = `nrql - New Relic に NRQL を投げる CLI（読み取り専�
   nrql help                         このヘルプ
 
 オプション:
-  -a, -account <id>  アカウント ID（NEW_RELIC_ACCOUNT_ID / config.yml account でも可）
+  -a, -account <id>  アカウント ID。カンマ区切りで複数指定可（NEW_RELIC_ACCOUNT_ID / config.yml）
   -format <fmt>      tsv（既定）/ table / json
   -no-header         TSV のヘッダ行を出さない
   -region <us|eu>    アカウントのデータセンター。既定 us（NEW_RELIC_REGION）
+  -timeout <秒>      1 リクエストの上限秒数。既定 60（NRQL_TIMEOUT）
   -profile <name>    Chrome のプロファイル。既定 auto=ログイン済みを自動検出（NRQL_CHROME_PROFILE）
 
 設定の優先順位: コマンドラインフラグ > 環境変数 > config.yml > 既定
@@ -66,6 +74,7 @@ const topUsage = `nrql - New Relic に NRQL を投げる CLI（読み取り専�
 環境変数:
   NEW_RELIC_ACCOUNT_ID  既定のアカウント ID
   NEW_RELIC_REGION      us / eu。EU のアカウントは eu が要る（既定 us）
+  NRQL_TIMEOUT          1 リクエストの上限秒数（既定 60）。広い TIMESERIES / FACET で伸ばす
   NEW_RELIC_API_KEY     User API key。設定するとブラウザを読まずに公開 NerdGraph を使う（CI 向け）
 
 終了コード: 0=成功 / 1=実行時エラー（セッション切れ・NRQL 構文エラー等） / 2=使い方の誤り
@@ -90,6 +99,8 @@ const queryHelp = `nrql query - NRQL を実行する
 
 オプション:
   -a, -account <id>  アカウント ID（必須。nrql accounts で確認できる）
+                     カンマ区切りで複数指定すると、まとめて 1 回のクエリになる
+                     例: -a 1234567,2345678（結果は合算。アカウント別には割れない）
   -format <fmt>      tsv（既定）/ table / json
   -no-header         TSV のヘッダ行を出さない
   （共通オプション -region / -profile は nrql --help を参照）
@@ -101,6 +112,7 @@ const queryHelp = `nrql query - NRQL を実行する
 例:
   nrql -a 1234567 "SELECT count(*) FROM Transaction SINCE 30 minutes ago"
   nrql -a 1234567 -format table "SELECT count(*) FROM Transaction FACET name LIMIT 10"
+  nrql -a 1234567,2345678 "SELECT count(*) FROM Transaction SINCE 1 hour ago"   # 合算
 `
 
 const accountsHelp = `nrql accounts - アクセスできるアカウント一覧を出す
@@ -224,14 +236,51 @@ func checkNoTrailingFlags(args []string) error {
 	return nil
 }
 
-// requireAccount はアカウント ID が未設定なら使い方エラーを返す。
-func (c config) requireAccount() error {
-	if c.accountID <= 0 {
+// parseAccountSpec は -a の値（"123" / "123,456"）をアカウント ID の並びに直す。
+//
+// 複数指定は NerdGraph の nrql(accounts: [...]) を使う形になる（issues/003）。
+// 重複は取り除き、順序は指定どおりに保つ（案内文とクエリの並びを一致させるため）。
+func parseAccountSpec(spec string) ([]int, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return nil, nil
+	}
+	var ids []int
+	seen := map[int]bool{}
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		n, err := strconv.Atoi(part)
+		if err != nil || n <= 0 {
+			return nil, &usageError{fmt.Sprintf(
+				"エラー: アカウント ID は正の整数です: %q\n  例: nrql -a 1234567 / nrql -a 1234567,2345678", part)}
+		}
+		if !seen[n] {
+			seen[n] = true
+			ids = append(ids, n)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, &usageError{fmt.Sprintf("エラー: アカウント ID を解釈できません: %q", spec)}
+	}
+	return ids, nil
+}
+
+// requireAccount はアカウント ID を解析し、未設定なら使い方エラーを返す。
+func (c *config) requireAccount() error {
+	ids, err := parseAccountSpec(c.accountSpec)
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
 		return &usageError{"エラー: アカウント ID が未設定です。\n" +
 			"  nrql accounts               で一覧を確認し\n" +
 			"  nrql config set account <id> で保存する（推奨。以後は指定不要）\n" +
 			"  もしくは nrql -a <id> \"<NRQL>\" / export NEW_RELIC_ACCOUNT_ID=<id>"}
 	}
+	c.accountIDs = ids
 	return nil
 }
 
@@ -304,7 +353,7 @@ func cmdQuery(args []string) error {
 	if err != nil {
 		return err
 	}
-	rows, err := c.runNRQL(cfg.accountID, query)
+	rows, err := c.runNRQL(cfg.accountIDs, query)
 	if err != nil {
 		return err
 	}

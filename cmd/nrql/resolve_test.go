@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // プロファイル選択の優先順位を固定する。
@@ -203,3 +204,38 @@ func TestRenderSelectsFormat(t *testing.T) {
 type nopCloser struct{ *strings.Reader }
 
 func (nopCloser) Close() error { return nil }
+
+// -timeout / NRQL_TIMEOUT が実際にクライアントへ届くこと。
+//
+// 広い TIMESERIES / FACET で 60 秒に当たったとき、利用者が伸ばせる必要がある。
+// 「フラグは在るが効いていない」を検出するため、クライアントの Timeout を直接見る。
+func TestTimeoutReachesClient(t *testing.T) {
+	orig := extractCookiesFn
+	extractCookiesFn = func(profile string) ([]cookieEntry, error) {
+		return []cookieEntry{{host: ".newrelic.com", name: "session", value: "v"}}, nil
+	}
+	defer func() { extractCookiesFn = orig }()
+	t.Setenv("NEW_RELIC_API_KEY", "")
+
+	c, err := resolveClient(config{region: "us", profile: "Default", timeout: 123})
+	if err != nil {
+		t.Fatalf("resolveClient: %v", err)
+	}
+	if c.http.Timeout != 123*time.Second {
+		t.Errorf("セッション経路にタイムアウトが届いていない: %v", c.http.Timeout)
+	}
+
+	t.Setenv("NEW_RELIC_API_KEY", "NRAK-X")
+	c2, err := resolveClient(config{region: "us", timeout: 77})
+	if err != nil {
+		t.Fatalf("resolveClient: %v", err)
+	}
+	if c2.http.Timeout != 77*time.Second {
+		t.Errorf("API キー経路にタイムアウトが届いていない: %v", c2.http.Timeout)
+	}
+
+	// 0 や未指定は既定へ落ちること（フラグ未指定でも壊れない）。
+	if got := newHTTPClient(0).Timeout; got != defaultTimeoutSeconds*time.Second {
+		t.Errorf("既定にならない: %v", got)
+	}
+}
