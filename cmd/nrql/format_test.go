@@ -62,6 +62,36 @@ func TestRenderTSVUsesColumnOrderAndBlankForMissing(t *testing.T) {
 	}
 }
 
+// 表の桁揃えを「ルーン数」ではなく「表示幅」で行うことを固定する。
+//
+// NRQL の FACET 値には日本語が普通に入る（店舗名・エラーメッセージ）。
+// ルーン数で詰めると全角 1 文字 = 1 カラムと数えてしまい、端末では列がずれる。
+func TestRenderTableAlignsByDisplayWidth(t *testing.T) {
+	rows := []resultRow{
+		{keys: []string{"name", "count"}, values: map[string]any{"name": "東京店舗", "count": "1"}},
+		{keys: []string{"name", "count"}, values: map[string]any{"name": "abcdefgh", "count": "22"}},
+	}
+	var buf bytes.Buffer
+	if err := renderTable(&buf, rows); err != nil {
+		t.Fatalf("renderTable: %v", err)
+	}
+
+	// 🚨 期待値を displayWidth で組み立てないこと。production と同じ式で測ると、
+	// 幅の数え方を壊す変異でテストの測り方も一緒に変わり、何も検出できなくなる
+	// （実際にそれで変異が素通りした）。ここは端末での見え方をそのまま literal で固定する。
+	//
+	// "東京店舗" は端末で 8 カラム、"abcdefgh" も 8 カラム。よって両方の直後に
+	// カラム間の空き 2 つだけが入り、2 列目は同じ位置から始まる。
+	want := "" +
+		"name      count\n" +
+		"----      -----\n" +
+		"東京店舗  1\n" +
+		"abcdefgh  22\n"
+	if buf.String() != want {
+		t.Errorf("表の桁揃えが表示幅になっていない:\ngot:\n%s\nwant:\n%s", buf.String(), want)
+	}
+}
+
 // 値にタブや改行が入っても TSV の列がずれないことを固定する。
 func TestRenderTSVFlattensTabsAndNewlines(t *testing.T) {
 	rows := []resultRow{

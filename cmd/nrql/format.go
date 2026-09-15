@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"text/tabwriter"
+
+	"github.com/mattn/go-runewidth"
 )
 
 // resultRow は NRQL の結果 1 行。
@@ -116,27 +117,75 @@ func renderTSV(w io.Writer, rows []resultRow, header bool) error {
 	return nil
 }
 
+// tableGap は表のカラム間の空き。
+const tableGap = 2
+
 // renderTable は桁を揃えた表で書き出す（人が読む用途）。
+//
+// 🚨 text/tabwriter は使わない。tabwriter はセル幅を**ルーン数**で数えるため、
+// 全角文字（日本語のファセット値・エラーメッセージ）が入ると表示上ずれる
+// （"東京店舗" は 4 ルーンだが端末では 8 カラム占める）。NRQL の結果には
+// 日本語が普通に入るので、表示幅で詰める。
 func renderTable(w io.Writer, rows []resultRow) error {
 	cols := columnsOf(rows)
 	if len(cols) == 0 {
 		return nil
 	}
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, strings.Join(cols, "\t"))
+
+	// 各カラムの表示幅を、ヘッダと全セルの最大値で決める。
+	widths := make([]int, len(cols))
+	for i, c := range cols {
+		widths[i] = displayWidth(c)
+	}
+	cells := make([][]string, 0, len(rows))
+	for _, r := range rows {
+		row := make([]string, len(cols))
+		for i, c := range cols {
+			row[i] = r.cell(c)
+			if n := displayWidth(row[i]); n > widths[i] {
+				widths[i] = n
+			}
+		}
+		cells = append(cells, row)
+	}
+
+	header := make([]string, len(cols))
 	seps := make([]string, len(cols))
 	for i, c := range cols {
-		seps[i] = strings.Repeat("-", len([]rune(c)))
+		header[i] = c
+		seps[i] = strings.Repeat("-", displayWidth(c))
 	}
-	fmt.Fprintln(tw, strings.Join(seps, "\t"))
-	for _, r := range rows {
-		cells := make([]string, len(cols))
-		for i, c := range cols {
-			cells[i] = r.cell(c)
+	if err := writeTableRow(w, header, widths); err != nil {
+		return err
+	}
+	if err := writeTableRow(w, seps, widths); err != nil {
+		return err
+	}
+	for _, row := range cells {
+		if err := writeTableRow(w, row, widths); err != nil {
+			return err
 		}
-		fmt.Fprintln(tw, strings.Join(cells, "\t"))
 	}
-	return tw.Flush()
+	return nil
+}
+
+// writeTableRow は 1 行を表示幅で詰めて書く（最終カラムは詰めない）。
+func writeTableRow(w io.Writer, row []string, widths []int) error {
+	var b strings.Builder
+	for i, cell := range row {
+		b.WriteString(cell)
+		if i == len(row)-1 {
+			break // 行末に余分な空白を残さない
+		}
+		b.WriteString(strings.Repeat(" ", widths[i]-displayWidth(cell)+tableGap))
+	}
+	_, err := fmt.Fprintln(w, b.String())
+	return err
+}
+
+// displayWidth は端末上で占めるカラム数を返す（全角 = 2）。
+func displayWidth(s string) int {
+	return runewidth.StringWidth(s)
 }
 
 // renderJSON は結果をそのまま JSON 配列で書き出す。

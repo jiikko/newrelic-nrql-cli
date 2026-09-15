@@ -24,6 +24,9 @@ WebTransaction/B   88210
 go install github.com/jiikko/newrelic-nrql-cli/cmd/nrql@latest
 ```
 
+**Go 1.24 以上が必要です**（標準ライブラリの `crypto/pbkdf2` を使うため。それ以前の Go では
+ビルドできません）。
+
 macOS 専用です（ブラウザの保存領域を macOS Keychain 経由で復号するため。
 `security` コマンドと `~/Library/Application Support` 配下のパスに依存しています）。
 `NEW_RELIC_API_KEY` を使う経路はブラウザを読まないので、他 OS でも動く見込みですが**未検証**です。

@@ -3,11 +3,13 @@ module github.com/jiikko/newrelic-nrql-cli
 go 1.25.0
 
 require (
+	github.com/mattn/go-runewidth v0.0.30
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.28.0
 )
 
 require (
+	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect

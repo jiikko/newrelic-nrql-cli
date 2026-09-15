@@ -40,7 +40,7 @@ issues/NNN-<カテゴリ>-<スラッグ>.md
 ```sh
 git fetch origin
 { find issues -type f -name '[0-9][0-9][0-9]-*.md' | sed 's|.*/||'; \
-  git ls-tree -r --name-only origin/main -- issues | sed 's|.*/||'; } |
+  git ls-tree -r --name-only origin/master -- issues | sed 's|.*/||'; } |
   grep -E '^[0-9]{3}-' | sort | tail -1
 ```
 
