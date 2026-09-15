@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -169,14 +170,34 @@ func main() {
 	}
 
 	if err != nil {
-		var ue *usageError
-		if errors.As(err, &ue) {
-			fmt.Fprintln(os.Stderr, ue.Error())
-			os.Exit(2)
+		code := exitCodeFor(err)
+		if code == exitUsage {
+			fmt.Fprintln(os.Stderr, err.Error())
+		} else {
+			fmt.Fprintln(os.Stderr, "エラー: "+err.Error())
 		}
-		fmt.Fprintln(os.Stderr, "エラー: "+err.Error())
-		os.Exit(1)
+		os.Exit(code)
 	}
+}
+
+// 終了コード。シェルから使うときの契約なので定数で持つ。
+const (
+	exitOK      = 0 // 成功
+	exitRuntime = 1 // 実行時エラー（セッション切れ・NRQL 構文エラー・ネットワーク等）
+	exitUsage   = 2 // 使い方の誤り（引数・フラグ・設定値）
+)
+
+// exitCodeFor はエラーから終了コードを決める。
+// 「使い方の誤り」と「実行時エラー」を混ぜると、スクリプト側で再試行の可否を判断できない。
+func exitCodeFor(err error) int {
+	if err == nil {
+		return exitOK
+	}
+	var ue *usageError
+	if errors.As(err, &ue) {
+		return exitUsage
+	}
+	return exitRuntime
 }
 
 // usageError は「引数の指定ミス」を表す。main で終了コード 2 として扱う。
@@ -215,8 +236,11 @@ func (c config) requireAccount() error {
 }
 
 func newFlagSet(name, help string, cfg *config) *flag.FlagSet {
-	fs := flag.NewFlagSet(name, flag.ExitOnError)
-	fs.Usage = func() { fmt.Fprint(os.Stdout, help) }
+	// 🚨 ExitOnError にしない。フラグの誤りでプロセスごと落ちると、
+	// 終了コードの決定が exitCodeFor を通らず、テストからも呼べない。
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(os.Stderr) // 使い方の出力が stdout に混ざるとパイプが壊れる
+	fs.Usage = func() { fmt.Fprint(os.Stderr, help) }
 	registerCommon(fs, cfg)
 	fs.StringVar(&cfg.format, "format", "tsv", "出力形式（tsv / table / json）")
 	fs.BoolVar(&cfg.noHeader, "no-header", false, "TSV のヘッダ行を出力しない")
@@ -226,7 +250,9 @@ func newFlagSet(name, help string, cfg *config) *flag.FlagSet {
 func cmdQuery(args []string) error {
 	var cfg config
 	fs := newFlagSet("query", queryHelp, &cfg)
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return &usageError{"エラー: " + err.Error()}
+	}
 
 	query := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if query == "" {
@@ -267,13 +293,15 @@ func cmdQuery(args []string) error {
 		fmt.Fprintln(os.Stderr, "0 件")
 		return nil
 	}
-	return render(cfg, rows)
+	return render(os.Stdout, cfg, rows)
 }
 
 func cmdAccounts(args []string) error {
 	var cfg config
 	fs := newFlagSet("accounts", accountsHelp, &cfg)
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return &usageError{"エラー: " + err.Error()}
+	}
 
 	if err := validateFormat(cfg.format); err != nil {
 		return err
@@ -298,7 +326,7 @@ func cmdAccounts(args []string) error {
 			values: map[string]any{"id": a.ID, "name": a.Name},
 		})
 	}
-	return render(cfg, rows)
+	return render(os.Stdout, cfg, rows)
 }
 
 func cmdConfig(args []string) error {
@@ -379,13 +407,15 @@ func validateFormat(f string) error {
 	}
 }
 
-func render(cfg config, rows []resultRow) error {
+// render は指定された形式で書き出す。出力先を引数に取るのはテストのため
+// （os.Stdout 直書きだと、形式の選択が正しいかを確かめられない）。
+func render(w io.Writer, cfg config, rows []resultRow) error {
 	switch cfg.format {
 	case "json":
-		return renderJSON(os.Stdout, rows)
+		return renderJSON(w, rows)
 	case "table":
-		return renderTable(os.Stdout, rows)
+		return renderTable(w, rows)
 	default:
-		return renderTSV(os.Stdout, rows, !cfg.noHeader)
+		return renderTSV(w, rows, !cfg.noHeader)
 	}
 }

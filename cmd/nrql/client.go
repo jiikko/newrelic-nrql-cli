@@ -29,6 +29,9 @@ const (
 	userAgent = "newrelic-nrql-cli (browser session; read-only NRQL)"
 )
 
+// maxResponseBytes は 1 レスポンスの読み取り上限。テストから差し替えられるよう変数にする。
+var maxResponseBytes int64 = 64 * 1024 * 1024
+
 // endpoints は 1 リージョンぶんの接続先。
 // 認証方式ごとにホストが違うため（上のコメント参照）、対で持つ。
 type endpoints struct {
@@ -198,9 +201,16 @@ func (c *client) graphQL(document string, out any) error {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024*1024))
+	// 上限 +1 バイト読み、超えていたら「大きすぎる」と明示する。
+	// 単に切り詰めると JSON の解析エラーに化け、「ログインページが返った」という
+	// 見当違いの診断へ誘導してしまう（コメントがそう案内しているため）。
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return err
+		return fmt.Errorf("レスポンスの受信に失敗（%s）: %w", c.endpoint, err)
+	}
+	if int64(len(body)) > maxResponseBytes {
+		return fmt.Errorf("レスポンスが大きすぎます（%d バイト超）。LIMIT や SINCE でクエリの範囲を絞ってください",
+			maxResponseBytes)
 	}
 
 	switch {

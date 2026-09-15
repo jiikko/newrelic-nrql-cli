@@ -12,6 +12,13 @@ import (
 // profileAuto は「New Relic にログイン済みのプロファイルを自動検出する」予約値。
 const profileAuto = "auto"
 
+// extractCookiesFn は Cookie の取り出し口。テストから差し替えるための seam。
+//
+// 本物は macOS の Keychain と Chrome の保存領域を読むため、テストから実行できない。
+// ここを 1 箇所にしておくと、プロファイル選択の優先順位（API キー > 明示指定 > 自動検出）を
+// 実機なしで固定できる。
+var extractCookiesFn = extractCookies
+
 // resolveClient は設定から実行用クライアントを 1 つ決める。
 //
 // 優先順位:
@@ -57,6 +64,15 @@ func resolveClient(cfg config) (*client, error) {
 	}
 
 	// 複数ある場合だけ、実際に認証が通るものを選ぶ（1 件なら往復を省く）。
+	return pickAuthenticatedClient(candidates, host)
+}
+
+// pickAuthenticatedClient は候補のうち認証が通る最初のものを返す。
+//
+// 候補が複数あるのは「仕事用と個人用の Chrome プロファイルが両方 New Relic の
+// セッションを持っている」状況。どれを使ったかは stderr に出す（黙って選ぶと、
+// 意図しないアカウントのデータを見ていることに気づけない）。
+func pickAuthenticatedClient(candidates []*client, host string) (*client, error) {
 	for _, c := range candidates {
 		if err := c.ping(); err == nil {
 			fmt.Fprintf(os.Stderr,
@@ -74,7 +90,7 @@ func resolveClient(cfg config) (*client, error) {
 // cookieClientForProfile は指定プロファイルのセッションでクライアントを作る。
 // New Relic 宛てのものが 1 つも無ければエラー（自動検出時は次の候補へ進む合図）。
 func cookieClientForProfile(ep endpoints, host, profile string) (*client, error) {
-	entries, err := extractCookies(profile)
+	entries, err := extractCookiesFn(profile)
 	if err != nil {
 		return nil, err
 	}
