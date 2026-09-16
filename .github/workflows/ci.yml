@@ -1,0 +1,50 @@
+name: CI
+
+# 🚨 paths フィルタは付けない。
+# 付けると「その paths に触らない commit では起動しない」ため、起動しなかっただけの
+# HEAD を「緑」と読み替える事故が起きる（赤いまま残った 1 つ前の commit が隠れる）。
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # 配布先と同じ OS で検査する（Chrome の保存領域の復号が macOS 前提で、
+    # Homebrew formula も macOS で build する）。public repo なので macOS runner も無料。
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # 版の正本は go.mod。ここに数字を書くと二重管理になり、片方の更新漏れで乖離する。
+          go-version-file: go.mod
+          cache: true
+
+      # 検査した数を出す。0 ファイルなら「差分なし」ではなく「何も見ていない」ので、
+      # 緑を見たときにその区別が付くようにしておく。
+      - name: gofmt
+        run: |
+          count=$(find . -name '*.go' -type f | wc -l | tr -d ' ')
+          if [ "$count" -eq 0 ]; then
+            echo "Go のファイルが 1 つも見つかりません（検査対象の取り違え）"
+            exit 1
+          fi
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt されていないファイル:"
+            echo "$unformatted"
+            exit 1
+          fi
+          echo "gofmt: 差分なし（${count} ファイルを検査）"
+
+      - run: go build ./...
+
+      - run: go vet ./...
+
+      # -race を付ける。後始末のシグナルハンドラとテストの pipe 捕捉で goroutine を使う。
+      - run: go test -race ./...
