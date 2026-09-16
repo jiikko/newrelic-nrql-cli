@@ -59,12 +59,13 @@ Brave / Chromium / Edge / Vivaldi / Arc などには対応しません。
 
 ```console
 $ nrql accounts
-id       name
---       ----
-1234567  Example Inc.
+id	name
+1234567	Example Inc.
 
 $ nrql config set account 1234567
 ```
+
+既定の出力はタブ区切りです。桁を揃えて読みたいときは `nrql accounts -format table`。
 
 初回実行時に macOS の Keychain 許可ダイアログが出ます。「常に許可」を選んでください。
 ターミナルに**フルディスクアクセス**が必要な場合もあります
@@ -180,8 +181,9 @@ go test ./...
 ```
 
 Chrome の保存領域を復号する部分（`cmd/nrql/cookies.go`）は
-[jiikko/esa-cli](https://github.com/jiikko/esa-cli) からの移植です（あちらは複数ブラウザ対応、
-こちらは Chrome 専用）。復号の仕様は共通なので、そこを直す場合は両方に当ててください。
+[jiikko/esa-cli](https://github.com/jiikko/esa-cli) からの移植です。どちらも macOS + Chrome 専用
+です（esa-cli も Brave / Chromium / Edge / Vivaldi の対応を落としました）。復号の仕様は共通なので、
+そこを直す場合は両方に当ててください。
 
 ## ライセンス
 
