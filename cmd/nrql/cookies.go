@@ -1,9 +1,13 @@
 // Google Chrome の Cookie を macOS Keychain 経由で復号して取り出す。
 //
 // 出典: github.com/jiikko/esa-cli の cmd/esa/cookies.go からの移植（同じ仕組みを
-// New Relic 向けに使う。あちらは複数ブラウザ対応だが、こちらは Chrome 専用）。仕様（PBKDF2-SHA1 1003 回 / AES-128-CBC / IV=0x20*16 /
+// New Relic 向けに使う）。仕様（PBKDF2-SHA1 1003 回 / AES-128-CBC / IV=0x20*16 /
 // Chrome 130+ = meta.version>=24 で復号後の先頭 32 バイトがホストハッシュ）は
 // 両者で共通なので、修正が要る場合は両方に当てること。
+//
+// 移植時点では esa-cli が複数ブラウザ対応でこちらだけが Chrome 専用だったが、
+// esa-cli も 3e93f3e で Chrome 専用になった（あちらの issue 003）。現在はどちらも
+// macOS + Google Chrome 専用で、下の 🚨 の理由も両者で共通。
 package main
 
 import (
@@ -28,11 +32,14 @@ import (
 
 // 🚨 このツールは Google Chrome 専用。
 //
-// 移植元の esa-cli は Brave / Chromium / Edge / Vivaldi も対応表に持っているが、
-// ここでは意図的に Chrome だけにしている。理由は、対応表の値（Keychain の
+// 意図的に Chrome だけにしている。理由は、対応表の値（Keychain の
 // サービス名・Application Support 配下のディレクトリ名）は**実機で確認しないと
 // 正しいか分からない**ため。手元で確認できるのは Chrome だけで、未確認の値を
 // 並べると「動くように見えて別ブラウザの領域を読みに行く」形の事故になる。
+//
+// 移植元の esa-cli はかつて Brave / Chromium / Edge / Vivaldi も対応表に持っていたが、
+// 同じ理由で落とした（あちらの issue 003）。**対応表を復活させる提案は両者で却下済み**なので、
+// 再提案する前にこの理由を読むこと。
 //
 // 他のブラウザに広げるなら、実機で `security find-generic-password` と
 // Application Support 配下のディレクトリ名を確認してから足すこと（issue 005）。
