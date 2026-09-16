@@ -17,9 +17,9 @@ jobs:
     # Homebrew formula も macOS で build する）。public repo なので macOS runner も無料。
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # 版の正本は go.mod。ここに数字を書くと二重管理になり、片方の更新漏れで乖離する。
           go-version-file: go.mod
