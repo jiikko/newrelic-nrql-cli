@@ -43,7 +43,7 @@ func registerCommon(fs *flag.FlagSet, cfg *config) {
 	fs.StringVar(&cfg.accountSpec, "account", def, "New Relic アカウント ID（必須）。カンマ区切りで複数指定可 / NEW_RELIC_ACCOUNT_ID / config.yml account")
 	fs.StringVar(&cfg.accountSpec, "a", def, "-account の別名")
 	fs.StringVar(&cfg.region, "region", resolveDefault("NEW_RELIC_REGION", fc.Region, "us"), "New Relic のデータセンター（us / eu）/ NEW_RELIC_REGION / config.yml region")
-	fs.IntVar(&cfg.timeout, "timeout", resolveIntDefault("NRQL_TIMEOUT", defaultTimeoutSeconds), "1 リクエストの上限秒数（既定 60）/ NRQL_TIMEOUT")
+	fs.IntVar(&cfg.timeout, "timeout", resolveTimeout(int(fc.Timeout)), "1 リクエストの上限秒数（既定 60）/ NRQL_TIMEOUT / config.yml timeout")
 	fs.StringVar(&cfg.profile, "profile", resolveDefault("NRQL_CHROME_PROFILE", fc.Profile, profileAuto), "ブラウザのプロファイル名。既定 auto（自動検出）/ NRQL_CHROME_PROFILE")
 }
 
@@ -65,7 +65,7 @@ const topUsage = `nrql - New Relic に NRQL を投げる CLI（読み取り専�
   -format <fmt>      tsv（既定）/ table / json
   -no-header         TSV のヘッダ行を出さない
   -region <us|eu>    アカウントのデータセンター。既定 us（NEW_RELIC_REGION）
-  -timeout <秒>      1 リクエストの上限秒数。既定 60（NRQL_TIMEOUT）
+  -timeout <秒>      1 リクエストの上限秒数。既定 60（NRQL_TIMEOUT / config.yml）
   -profile <name>    Chrome のプロファイル。既定 auto=ログイン済みを自動検出（NRQL_CHROME_PROFILE）
 
 設定の優先順位: コマンドラインフラグ > 環境変数 > config.yml > 既定
@@ -132,12 +132,13 @@ const configHelp = `nrql config - 設定ファイル（config.yml）を表示・
   nrql config set <key> <value> 値を保存する
   nrql config path              設定ファイルのパスを表示
 
-key: account / region / profile
+key: account / region / profile / timeout
 
 例:
   nrql config set account 1234567
   nrql config set region eu
   nrql config set profile "Profile 3"
+  nrql config set timeout 180
 `
 
 // subcommands はサブコマンド名から実装への対応表。
@@ -417,9 +418,10 @@ func cmdConfig(args []string) error {
 	case "show":
 		fc := loadFileConfig()
 		fmt.Printf("%-10s %s\n", "path:", path)
-		fmt.Printf("%-10s %s\n", "account:", formatAccount(int(fc.Account)))
+		fmt.Printf("%-10s %s\n", "account:", formatOptionalInt(int(fc.Account)))
 		fmt.Printf("%-10s %s\n", "region:", fc.Region)
 		fmt.Printf("%-10s %s\n", "profile:", fc.Profile)
+		fmt.Printf("%-10s %s\n", "timeout:", formatOptionalInt(int(fc.Timeout)))
 		return nil
 	case "path":
 		fmt.Println(path)
@@ -434,7 +436,7 @@ func cmdConfig(args []string) error {
 					"  ファイルを直すか削除してから、もう一度実行してください: %s", err, path)}
 		}
 		if len(args) < 3 {
-			return &usageError{"エラー: 使い方: nrql config set <account|region|profile> <値>"}
+			return &usageError{"エラー: 使い方: nrql config set <account|region|profile|timeout> <値>"}
 		}
 		fc := loadFileConfig()
 		key, value := args[1], args[2]
@@ -452,8 +454,14 @@ func cmdConfig(args []string) error {
 			fc.Region = value
 		case "profile":
 			fc.Profile = value
+		case "timeout":
+			n, err := strconv.Atoi(value)
+			if err != nil || n <= 0 {
+				return &usageError{fmt.Sprintf("エラー: timeout は正の整数の秒数です: %q", value)}
+			}
+			fc.Timeout = timeoutSeconds(n)
 		default:
-			return &usageError{fmt.Sprintf("エラー: 不明なキー %q（account / region / profile）", key)}
+			return &usageError{fmt.Sprintf("エラー: 不明なキー %q（account / region / profile / timeout）", key)}
 		}
 		if err := saveFileConfig(fc); err != nil {
 			return err
@@ -465,12 +473,13 @@ func cmdConfig(args []string) error {
 	}
 }
 
-// formatAccount は config show 用にアカウント ID を文字列化する（未設定は空欄）。
-func formatAccount(id int) string {
-	if id <= 0 {
+// formatOptionalInt は config show 用に「未設定なら空欄」で整数を文字列化する。
+// account と timeout で同じ表示規則なので 1 箇所に置く。
+func formatOptionalInt(n int) string {
+	if n <= 0 {
 		return ""
 	}
-	return strconv.Itoa(id)
+	return strconv.Itoa(n)
 }
 
 func validateFormat(f string) error {

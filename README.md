@@ -92,7 +92,7 @@ nrql config set region eu
 nrql [オプション] "<NRQL>"        # クエリ実行（query サブコマンドは省略可）
 nrql query [オプション] "<NRQL>"  # 同上（明示形）
 nrql accounts                     # アクセスできるアカウント一覧
-nrql config show|set|path         # 設定（key: account / region / profile）
+nrql config show|set|path         # 設定（key: account / region / profile / timeout）
 nrql help                         # ヘルプ
 ```
 
@@ -108,7 +108,7 @@ nrql help                         # ヘルプ
 | `-no-header` | TSV のヘッダ行を出さない |
 | `-region <us\|eu>` | アカウントのデータセンター（既定 `us`） |
 | `-profile <name>` | Chrome のプロファイル名。既定 `auto`（ログイン済みを自動検出） |
-| `-timeout <秒>` | 1 リクエストの上限秒数。既定 `60`。広い `TIMESERIES` / `FACET` で伸ばす |
+| `-timeout <秒>` | 1 リクエストの上限秒数。既定 `60`。広い `TIMESERIES` / `FACET` で伸ばす（`nrql config set timeout 180` で既定を変えられる） |
 
 **フラグは NRQL より前に置いてください。** 後ろに置くと NRQL 本文に吸収されるため、
 `nrql "<NRQL>" -format json` は使い方エラー（rc=2）になります。

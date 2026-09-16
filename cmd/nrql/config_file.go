@@ -20,31 +20,56 @@ import (
 type accountID int
 
 func (a *accountID) UnmarshalYAML(value *yaml.Node) error {
-	// 🚨 value.Decode(&int) に任せない。YAML 1.1 の暗黙変換により
-	//   account: 0123456 → 42798（8 進）/ 0x1F → 31 / 1.5e7 → 15000000
-	// と、**書いた数字と違うアカウント**を警告なしに引く（実測）。
-	// 生のスカラー文字列を 10 進として読み、それ以外は受け付けない。
-	if value.Kind != yaml.ScalarNode {
-		return fmt.Errorf("account はスカラー値で書いてください")
-	}
-	raw := strings.TrimSpace(value.Value)
-	if raw == "" || raw == "null" || raw == "~" {
-		*a = 0
-		return nil
-	}
-	n, err := strconv.Atoi(raw)
+	n, err := decodeDecimalScalar(value, "account")
 	if err != nil {
-		return fmt.Errorf("account を 10 進の整数として解釈できません: %q", raw)
+		return err
 	}
 	*a = accountID(n)
 	return nil
 }
 
+// timeoutSeconds は config.yml の timeout 値。account と同じ理由で自前で読む
+// （timeout: 060 が 8 進と解釈されて 48 秒になる、のような取り違えを避ける）。
+type timeoutSeconds int
+
+func (t *timeoutSeconds) UnmarshalYAML(value *yaml.Node) error {
+	n, err := decodeDecimalScalar(value, "timeout")
+	if err != nil {
+		return err
+	}
+	*t = timeoutSeconds(n)
+	return nil
+}
+
+// decodeDecimalScalar は YAML のスカラーを 10 進の整数として読む。空値は 0。
+//
+// 🚨 value.Decode(&int) に任せない。YAML 1.1 の暗黙変換により
+//
+//	account: 0123456 → 42798（8 進）/ 0x1F → 31 / 1.5e7 → 15000000
+//
+// と、**書いた数字と違う値**を警告なしに使う（実測）。
+// 生のスカラー文字列を 10 進として読み、それ以外は受け付けない。
+func decodeDecimalScalar(value *yaml.Node, field string) (int, error) {
+	if value.Kind != yaml.ScalarNode {
+		return 0, fmt.Errorf("%s はスカラー値で書いてください", field)
+	}
+	raw := strings.TrimSpace(value.Value)
+	if raw == "" || raw == "null" || raw == "~" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s を 10 進の整数として解釈できません: %q", field, raw)
+	}
+	return n, nil
+}
+
 // fileConfig は config.yml の内容。すべて任意項目。
 type fileConfig struct {
-	Account accountID `yaml:"account,omitempty"` // 既定のアカウント ID
-	Region  string    `yaml:"region,omitempty"`  // us / eu
-	Profile string    `yaml:"profile,omitempty"` // Chrome のプロファイル名
+	Account accountID      `yaml:"account,omitempty"` // 既定のアカウント ID
+	Region  string         `yaml:"region,omitempty"`  // us / eu
+	Profile string         `yaml:"profile,omitempty"` // Chrome のプロファイル名
+	Timeout timeoutSeconds `yaml:"timeout,omitempty"` // 1 リクエストの上限秒数
 }
 
 // configDir は $XDG_CONFIG_HOME/newrelic-nrql-cli（無ければ ~/.config/newrelic-nrql-cli）。
@@ -144,7 +169,8 @@ func saveFileConfig(fc fileConfig) error {
 	header := "# newrelic-nrql-cli 設定ファイル（nrql config set で更新できます）\n" +
 		"# account: 既定のアカウント ID（nrql accounts で調べられます）\n" +
 		"# region: アカウントのデータセンター（us / eu）\n" +
-		"# profile: Chrome のプロファイル名（auto でログイン済みを自動検出）\n"
+		"# profile: Chrome のプロファイル名（auto でログイン済みを自動検出）\n" +
+		"# timeout: 1 リクエストの上限秒数（既定 60）\n"
 	return os.WriteFile(filepath.Join(dir, "config.yml"), append([]byte(header), data...), 0o600)
 }
 
@@ -164,20 +190,26 @@ func resolveDefault(envKey, fileValue, builtin string) string {
 // 広い TIMESERIES や FACET を投げると 60 秒では足りないことがあるので -timeout で伸ばせる。
 const defaultTimeoutSeconds = 60
 
-// resolveIntDefault は環境変数から正の整数の既定値を読む。
-// 不正な値は黙って既定へ落とさず、警告してから既定を使う
-// （黙って落とすと「設定したのに効いていない」ことに気づけない）。
-func resolveIntDefault(envKey string, builtin int) int {
-	v := os.Getenv(envKey)
-	if v == "" {
-		return builtin
+// resolveTimeout は「NRQL_TIMEOUT > config.yml の timeout > 組み込み既定」の順で
+// タイムアウトの既定値を決める（resolveDefault の int 版）。
+//
+// 🚨 config.yml を読む段を飛ばさない。-timeout だけが config.yml から読まれない状態は、
+// README とヘルプが謳う優先順位（フラグ > 環境変数 > config.yml > 既定）と食い違う。
+func resolveTimeout(fileValue int) int {
+	if v := os.Getenv("NRQL_TIMEOUT"); v != "" {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err == nil && n > 0 {
+			return n
+		}
+		fmt.Fprintf(os.Stderr, "警告: NRQL_TIMEOUT=%q は正の整数ではありません（config.yml か既定値を使います）\n", v)
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n <= 0 {
-		fmt.Fprintf(os.Stderr, "警告: %s=%q は正の整数ではありません（既定の %d 秒を使います）\n", envKey, v, builtin)
-		return builtin
+	if fileValue > 0 {
+		return fileValue
 	}
-	return n
+	if fileValue != 0 {
+		fmt.Fprintf(os.Stderr, "警告: config.yml の timeout=%d は正の整数ではありません（既定の %d 秒を使います）\n", fileValue, defaultTimeoutSeconds)
+	}
+	return defaultTimeoutSeconds
 }
 
 // resolveAccountDefault はアカウント ID の既定値を「環境変数 > config.yml > 0（未設定）」で決める。
