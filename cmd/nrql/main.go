@@ -292,23 +292,30 @@ func (c *config) requireAccount() error {
 //
 // flag.ExitOnError だとこの分岐がプロセスの外で決まってしまい、
 // 終了コードの決定（exitCodeFor）もテストも通らない。
-func parseArgs(fs *flag.FlagSet, help string, args []string) (helpRequested bool, err error) {
+//
+// 🚨 usage を出すのはこの関数だけ（newFlagSet の fs.Usage は no-op にしてある）。
+// flag は ErrHelp を返す**前に**自分で fs.Usage を呼ぶので、そちらでも出すと
+// --help が stdout と stderr の両方に出る（実測: nrql query --help が両方に 22 行）。
+func parseArgs(fs *flag.FlagSet, help string, args []string, stdout io.Writer) (helpRequested bool, err error) {
 	if e := fs.Parse(args); e != nil {
 		if errors.Is(e, flag.ErrHelp) {
-			fmt.Fprint(os.Stdout, help)
+			fmt.Fprint(stdout, help)
 			return true, nil
 		}
+		fmt.Fprint(fs.Output(), help) // フラグの誤りのときだけ usage を stderr へ
 		return false, &usageError{"エラー: " + e.Error()}
 	}
 	return false, nil
 }
 
-func newFlagSet(name, help string, cfg *config) *flag.FlagSet {
+func newFlagSet(name string, cfg *config) *flag.FlagSet {
 	// 🚨 ExitOnError にしない。フラグの誤りでプロセスごと落ちると、
 	// 終了コードの決定が exitCodeFor を通らず、テストからも呼べない。
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr) // 使い方の出力が stdout に混ざるとパイプが壊れる
-	fs.Usage = func() { fmt.Fprint(os.Stderr, help) }
+	// 🚨 no-op。flag は ErrHelp を返す前にここを呼ぶため、ここでも出すと
+	// parseArgs が stdout へ出す --help と二重になる。usage は parseArgs が出す。
+	fs.Usage = func() {}
 	registerCommon(fs, cfg)
 	fs.StringVar(&cfg.format, "format", "tsv", "出力形式（tsv / table / json）")
 	fs.BoolVar(&cfg.noHeader, "no-header", false, "TSV のヘッダ行を出力しない")
@@ -317,8 +324,8 @@ func newFlagSet(name, help string, cfg *config) *flag.FlagSet {
 
 func cmdQuery(args []string) error {
 	var cfg config
-	fs := newFlagSet("query", queryHelp, &cfg)
-	if done, err := parseArgs(fs, queryHelp, args); err != nil || done {
+	fs := newFlagSet("query", &cfg)
+	if done, err := parseArgs(fs, queryHelp, args, os.Stdout); err != nil || done {
 		return err
 	}
 
@@ -366,8 +373,8 @@ func cmdQuery(args []string) error {
 
 func cmdAccounts(args []string) error {
 	var cfg config
-	fs := newFlagSet("accounts", accountsHelp, &cfg)
-	if done, err := parseArgs(fs, accountsHelp, args); err != nil || done {
+	fs := newFlagSet("accounts", &cfg)
+	if done, err := parseArgs(fs, accountsHelp, args, os.Stdout); err != nil || done {
 		return err
 	}
 
