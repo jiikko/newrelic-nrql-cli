@@ -22,12 +22,28 @@ WebTransaction/B   88210
 
 ## インストール
 
+### Homebrew（推奨）
+
+```console
+brew install jiikko/tap/nrql
+```
+
+更新は `brew upgrade nrql`、master の先端を試すなら `brew install --HEAD jiikko/tap/nrql`。
+Go は formula の build 依存として Homebrew が入れるので、自分で用意する必要はありません。
+
+formula の正本は [jiikko/homebrew-tap](https://github.com/jiikko/homebrew-tap) の
+`Formula/nrql.rb` で、このリポジトリの `packaging/nrql.rb` は同じ内容の写しです
+（リリース時に sha256 を更新する対象をこちらからも辿れるようにするため）。
+直すときは tap 側が先です。
+
+### go install
+
 ```console
 go install github.com/jiikko/newrelic-nrql-cli/cmd/nrql@latest
 ```
 
-**Go 1.24 以上が必要です**（標準ライブラリの `crypto/pbkdf2` を使うため。それ以前の Go では
-ビルドできません）。
+`go.mod` の `go` ディレクティブが **1.25.0** なので、それ以上の Go が要ります
+（Go 1.21 以降なら既定の `GOTOOLCHAIN=auto` が新しいツールチェインを自動で取りに行きます）。
 
 **macOS + Google Chrome 専用です**（方針として固定しています。`issues/done/005` 参照）。
 Chrome の保存領域を macOS Keychain 経由で復号するため、`security` コマンドと
@@ -79,7 +95,8 @@ nrql config show|set|path         # 設定（key: account / region / profile）
 nrql help                         # ヘルプ
 ```
 
-サブコマンドはこの 4 つ（`query` / `accounts` / `config` / `help`）だけです。
+サブコマンドはこの 4 つ（`query` / `accounts` / `config` / `help`）だけです
+（`query` には別名 `q` があります）。
 本体は NRQL を投げる `query` で、`accounts` は最初にアカウント ID を調べるため、
 `config` はそれを保存して以後 `-a` を省くための補助です。
 
@@ -91,6 +108,11 @@ nrql help                         # ヘルプ
 | `-region <us\|eu>` | アカウントのデータセンター（既定 `us`） |
 | `-profile <name>` | Chrome のプロファイル名。既定 `auto`（ログイン済みを自動検出） |
 | `-timeout <秒>` | 1 リクエストの上限秒数。既定 `60`。広い `TIMESERIES` / `FACET` で伸ばす |
+
+**フラグは NRQL より前に置いてください。** 後ろに置くと NRQL 本文に吸収されるため、
+`nrql "<NRQL>" -format json` は使い方エラー（rc=2）になります。
+
+終了コードは **0=成功 / 1=実行時エラー（セッション切れ・NRQL 構文エラー等） / 2=使い方の誤り**。
 
 設定の優先順位: **コマンドラインフラグ > 環境変数 > `config.yml` > 既定**
 
