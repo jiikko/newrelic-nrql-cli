@@ -32,9 +32,9 @@ brew install jiikko/tap/nrql
 Go は formula の build 依存として Homebrew が入れるので、自分で用意する必要はありません。
 
 formula の正本は [jiikko/homebrew-tap](https://github.com/jiikko/homebrew-tap) の
-`Formula/nrql.rb` で、このリポジトリの `packaging/nrql.rb` は同じ内容の写しです
-（リリース時に sha256 を更新する対象をこちらからも辿れるようにするため）。
-直すときは tap 側が先です。
+`Formula/nrql.rb` **のみ**です。このリポジトリには写しを置きません
+（2 箇所に同じものがあると、片方だけ直したときに静かにずれるため。
+「直すときは tap 側が先」のような注記は同期の仕組みにはなりません）。
 
 ### go install
 
