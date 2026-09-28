@@ -46,7 +46,9 @@ func clientFor(profile string) (*client, error) {
 func TestCookieReadFailureClassification(t *testing.T) {
 	orig := extractCookiesFn
 	t.Cleanup(func() { extractCookiesFn = orig })
-	extractCookiesFn = func(profile string) (chromecookie.Result, error) { return readProfileCookies(profile, []byte(testPassword)) }
+	extractCookiesFn = func(profile string) (chromecookie.Result, error) {
+		return readProfileCookies(profile, []byte(testPassword))
+	}
 
 	t.Run("Cookie DB が無いのはセッション無し（黙って飛ばす）", func(t *testing.T) {
 		isolateCookieIO(t)

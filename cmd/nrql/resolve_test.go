@@ -586,7 +586,7 @@ func TestResolveClientAutoSkipsPermissionDeniedProfiles(t *testing.T) {
 	}
 	session := []fakeCookieRow{{Host: ".newrelic.com", Name: "session", Value: "v"}}
 	setup := func(t *testing.T) string {
-				home := fakeChromeHome(t, "Default", "Profile 1")
+		home := fakeChromeHome(t, "Default", "Profile 1")
 		makeCookieDB(t, home, "Default", 0, session)
 		makeCookieDB(t, home, "Profile 1", 0, session)
 		return home
@@ -627,7 +627,7 @@ func TestExplicitProfilePermissionErrorHasHint(t *testing.T) {
 		t.Skip("root では権限で stat を失敗させられない")
 	}
 	t.Setenv("NEW_RELIC_API_KEY", "")
-		home := fakeChromeHome(t, "Default")
+	home := fakeChromeHome(t, "Default")
 	makeCookieDB(t, home, "Default", 0, []fakeCookieRow{{Host: ".newrelic.com", Name: "session", Value: "v"}})
 	dir := chromecookietest.ProfileDir(home, "Default")
 	if err := os.Chmod(dir, 0o000); err != nil {
