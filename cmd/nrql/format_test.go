@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// decodeResultRow / columnsOf が「NRQL の SELECT の並び順」を保つことを固定する。
+// decodeResultRow / columnsOf が「応答の並び順」を保つことを固定する。
 //
 // fixture は意図的に次の形にしてある:
 //   - キーがアルファベット順でない（sort してしまう実装なら落ちる）
@@ -107,5 +107,62 @@ func TestRenderTSVFlattensTabsAndNewlines(t *testing.T) {
 	}
 	if line != "a b c" {
 		t.Errorf("got %q, want %q", line, "a b c")
+	}
+}
+
+// -format json も応答の並び順（TSV / table と同じ）でキーを出すことを固定する。
+//
+// 🚨 map[string]any を encoding/json に渡すとキーがアルファベット順に並び替えられ、
+// resultRow が保っている列順が JSON だけ失われる（TSV / table は保つのに）。
+// fixture のキーはアルファベット順と逆にしてある（並び替える実装なら必ず落ちる）。
+// 2 行目は count を欠く（欠けたキーは出さない＝ null にしない）。
+// 値の < > & は HTML エスケープしない（既存出力の SetEscapeHTML(false) と同じ）。
+func TestRenderJSONPreservesColumnOrder(t *testing.T) {
+	raws := [][]byte{
+		[]byte(`{"zone":"a<b>&c","count":653517,"average.duration":0.25,"nested":{"k":[1,2]},"none":null}`),
+		[]byte(`{"zone":"w","average.duration":1.5}`),
+	}
+	var rows []resultRow
+	for _, raw := range raws {
+		r, err := decodeResultRow(raw)
+		if err != nil {
+			t.Fatalf("decodeResultRow: %v", err)
+		}
+		rows = append(rows, r)
+	}
+	var buf bytes.Buffer
+	if err := renderJSON(&buf, rows); err != nil {
+		t.Fatalf("renderJSON: %v", err)
+	}
+	want := `[
+  {
+    "zone": "a<b>&c",
+    "count": 653517,
+    "average.duration": 0.25,
+    "nested": {
+      "k": [
+        1,
+        2
+      ]
+    },
+    "none": null
+  },
+  {
+    "zone": "w",
+    "average.duration": 1.5
+  }
+]
+`
+	if buf.String() != want {
+		t.Errorf("JSON 出力が違う:\ngot:\n%s\nwant:\n%s", buf.String(), want)
+	}
+
+	// 0 件は空配列（null にしない）。
+	var empty bytes.Buffer
+	if err := renderJSON(&empty, nil); err != nil {
+		t.Fatalf("renderJSON(nil): %v", err)
+	}
+	if empty.String() != "[]\n" {
+		t.Errorf("0 件の JSON が違う: %q", empty.String())
 	}
 }

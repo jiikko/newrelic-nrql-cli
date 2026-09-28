@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -96,10 +98,10 @@ func configFilePath() (string, error) {
 var (
 	fileConfigOnce   sync.Once
 	fileConfigCached fileConfig
-	fileConfigErr    error // 解析に失敗したときの理由（config set はこれを見て書き込みを拒む）
+	fileConfigErr    error // 読めなかった / 一部を解析できなかったときの理由（config set はこれを見て書き込みを拒む）
 )
 
-// fileConfigProblem は config.yml の解析に失敗していればその理由を返す。
+// fileConfigProblem は config.yml が在るのに完全には読めていなければその理由を返す（無いだけなら nil）。
 func fileConfigProblem() error {
 	loadFileConfig()
 	return fileConfigErr
@@ -114,14 +116,22 @@ func loadFileConfig() fileConfig {
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
+			// 🚨 「無い」は ENOENT だけ。EACCES / EIO まで無い扱いにすると fileConfigErr が
+			// nil のままで、config set が読めなかったファイルをゼロ値から書き直す。
+			if !errors.Is(err, fs.ErrNotExist) {
+				fileConfigErr = fmt.Errorf("%s を読めませんでした: %w", path, err)
+				fmt.Fprintf(os.Stderr, "警告: %v\n  （config.yml の設定は使わずに続けます）\n", fileConfigErr)
+			}
 			return
 		}
 		fc, err := parseFileConfig(data)
 		if err != nil {
 			fileConfigErr = fmt.Errorf("%s の解析に失敗しました: %w", path, err)
 			fmt.Fprintf(os.Stderr, "警告: %v\n", fileConfigErr)
-			if fc.Region != "" || fc.Profile != "" {
-				fmt.Fprintf(os.Stderr, "  （region / profile は読めたのでそのまま使います）\n")
+			var fe *fileConfigFieldError
+			if errors.As(err, &fe) {
+				fmt.Fprintf(os.Stderr, "  （%s は使いません。それ以外の項目は読めた値を使います）\n",
+					strings.Join(fe.fieldNames(), " / "))
 			}
 		}
 		fileConfigCached = fc
@@ -129,28 +139,164 @@ func loadFileConfig() fileConfig {
 	return fileConfigCached
 }
 
+// fileConfigFieldError は config.yml のうち読めなかった項目の一覧。
+// 文書そのものは読めていて、ここに挙がった項目だけを落としたことを表す。
+type fileConfigFieldError struct {
+	fields []fieldProblem
+}
+
+type fieldProblem struct {
+	name string
+	err  error
+}
+
+func (e *fileConfigFieldError) Error() string {
+	msgs := make([]string, len(e.fields))
+	for i, f := range e.fields {
+		msgs[i] = fmt.Sprintf("%s: %v", f.name, f.err)
+	}
+	return strings.Join(msgs, " / ")
+}
+
+// fieldNames は落とした項目の名前を返す（警告文用。<< → account / region / profile / timeout の順）。
+func (e *fileConfigFieldError) fieldNames() []string {
+	names := make([]string, len(e.fields))
+	for i, f := range e.fields {
+		names[i] = f.name
+	}
+	return names
+}
+
 // parseFileConfig は config.yml の中身を解釈する。
 //
-// 🚨 解析に失敗しても、読めた項目は返す。account の書式が不正なだけで
+// まず従来どおり struct へ一括で読む（YAML のマージキー `<<` の展開・重複キーの拒否は
+// yaml.v3 がこの経路でだけ行う）。成功すればそれがすべて。
+//
+// 🚨 一括で読めなかったときも、読めた項目は返す。account の書式が不正なだけで
 // region / profile まで失うと、利用者が気づかないまま別リージョンへ繋ぎに行く
-// （issues/004 の症状を設定ファイル側から作ることになる）。
+// （issues/004 の症状を設定ファイル側から作ることになる）。救済は項目ごとに独立に読む
+// （以前の「account を除いてもう一度読む」形は、timeout 等が壊れていると全部を失っていた）。
 // 戻り値の error は「この設定ファイルは完全には読めていない」という事実で、
-// config set はこれを見て上書きを拒む。
+// config set はこれを見て上書きを拒む（救済で読めた項目があっても必ず non-nil）。
 func parseFileConfig(data []byte) (fileConfig, error) {
 	var fc fileConfig
 	err := yaml.Unmarshal(data, &fc)
 	if err == nil {
 		return fc, nil
 	}
-	// account を除いてもう一度読む（読めるものは救う）。
-	var partial struct {
-		Region  string `yaml:"region,omitempty"`
-		Profile string `yaml:"profile,omitempty"`
+	return salvageFileConfig(data, err)
+}
+
+// salvageFileConfig は一括の読み込みに失敗したファイルから、項目ごとに読める値を拾う。
+// whole は一括読み込みのエラー（読めた項目があっても問題が見つからなければこれを返す）。
+//
+// 🚨 マージキー（<<）の展開と優先順位（トップレベルの値がマージ元より優先）を自前で
+// 再現しない。以前の「読めなかったキーを外して読み直す」近似は、外したキーの値がマージ元から
+// 戻って「使わない」と警告した値が使われ、マージ元の中の壊れた値が表に出て全体を失った。
+// 各項目を yaml.Node で受ける struct へ読むと、展開と優先順位は yaml.v3 がそのまま行うので、
+// その後で項目ごとに値を解釈する。
+//
+// 検出しない形: Chrome が作らない手書き YAML の珍しい組み合わせ（アンカーの中の重複キー等）は
+// 網羅しない。その場合も fileConfigErr は non-nil になり、config set が上書きを拒むのが最後の砦。
+func salvageFileConfig(data []byte, whole error) (fileConfig, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fileConfig{}, err // 構文として読めない（項目を切り分けられない）
 	}
-	if err2 := yaml.Unmarshal(data, &partial); err2 == nil {
-		return fileConfig{Region: partial.Region, Profile: partial.Profile}, err
+	if doc.Kind == 0 || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return fileConfig{}, whole // マッピングでない文書（項目が無い）
 	}
-	return fileConfig{}, err
+	root := doc.Content[0]
+
+	// yaml.v3 は重複キーがあると（知らないキーでも）struct への Decode ごと拒む。
+	// どちらが意図した値か分からないので、重複したキーは外してから読む。
+	count := map[string]int{}
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if k := root.Content[i]; !isMergeKey(k) {
+			count[k.Value]++
+		}
+	}
+	dup := map[string]bool{}
+	for k, n := range count {
+		if n > 1 {
+			dup[k] = true
+		}
+	}
+
+	var nodes struct {
+		Account yaml.Node `yaml:"account"`
+		Region  yaml.Node `yaml:"region"`
+		Profile yaml.Node `yaml:"profile"`
+		Timeout yaml.Node `yaml:"timeout"`
+	}
+	var fc fileConfig
+	fields := []struct {
+		name   string
+		node   *yaml.Node
+		target any
+	}{
+		{"account", &nodes.Account, &fc.Account},
+		{"region", &nodes.Region, &fc.Region},
+		{"profile", &nodes.Profile, &fc.Profile},
+		{"timeout", &nodes.Timeout, &fc.Timeout},
+	}
+
+	var problems []fieldProblem
+	if err := withoutKeys(root, dup).Decode(&nodes); err != nil {
+		// マージの展開に失敗した（と考えられる）。原因を取り違えないよう実際のエラーを添える。
+		// マージを使わずに、トップレベルに書かれた項目だけを読む。
+		problems = append(problems, fieldProblem{name: "<<",
+			err: fmt.Errorf("マージキーを展開できません（マージで入る項目は使いません）: %w", err)})
+		nodes.Account, nodes.Region, nodes.Profile, nodes.Timeout = yaml.Node{}, yaml.Node{}, yaml.Node{}, yaml.Node{}
+		for i := 0; i+1 < len(root.Content); i += 2 {
+			k, v := root.Content[i], root.Content[i+1]
+			for _, f := range fields {
+				if k.Value == f.name && !isMergeKey(k) && !dup[f.name] {
+					*f.node = *v
+				}
+			}
+		}
+	}
+
+	for _, f := range fields {
+		if dup[f.name] {
+			// 🚨 マージ元で埋め直さない（外したキーの値がマージ元から戻らないよう Node を読まない）。
+			problems = append(problems, fieldProblem{name: f.name, err: fmt.Errorf("キーが %d 回書かれています", count[f.name])})
+			continue
+		}
+		if f.node.Kind == 0 {
+			continue // 書かれていない
+		}
+		if err := f.node.Decode(f.target); err != nil {
+			problems = append(problems, fieldProblem{name: f.name, err: err})
+		}
+	}
+
+	if len(problems) == 0 {
+		// 一括では失敗したのに項目単位では問題が見つからない形（知らないキーの重複など）。
+		// 読めた値は使うが、error は返し続ける（config set はこれを見て上書きを拒む）。
+		return fc, whole
+	}
+	return fc, &fileConfigFieldError{fields: problems}
+}
+
+// isMergeKey は YAML のマージキー（<<）かを返す。
+func isMergeKey(k *yaml.Node) bool {
+	return k.Tag == "!!merge" || k.Value == "<<"
+}
+
+// withoutKeys は mapping から drop に含まれるキーの組を取り除いた写しを返す（元は変えない）。
+func withoutKeys(mapping *yaml.Node, drop map[string]bool) *yaml.Node {
+	cp := *mapping
+	cp.Content = nil
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		k := mapping.Content[i]
+		if !isMergeKey(k) && drop[k.Value] {
+			continue
+		}
+		cp.Content = append(cp.Content, k, mapping.Content[i+1])
+	}
+	return &cp
 }
 
 // saveFileConfig は config.yml を書き出す（ディレクトリごと作成）。

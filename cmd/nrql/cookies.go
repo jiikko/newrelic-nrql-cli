@@ -15,9 +15,12 @@ import (
 	"crypto/cipher"
 	"crypto/pbkdf2"
 	"crypto/sha1"
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -84,8 +87,9 @@ func deriveKey(password []byte) ([]byte, error) {
 
 // decryptValue は encrypted_value を復号する。
 // v10 プレフィックスなら AES-128-CBC（IV=0x20*16, PKCS7）で復号し、
-// metaVersion>=24 なら復号後の先頭 32 バイト（ハッシュプレフィックス）を落とす。
-func decryptValue(enc, key []byte, metaVersion int) (string, error) {
+// metaVersion>=24 なら復号後の先頭 32 バイト（ハッシュプレフィックス）を照合してから落とす。
+// hostKey は cookies テーブルの host_key 列（先頭ドットを含むならそのまま）。
+func decryptValue(enc, key []byte, metaVersion int, hostKey string) (string, error) {
 	if len(enc) == 0 {
 		return "", nil
 	}
@@ -112,10 +116,25 @@ func decryptValue(enc, key []byte, metaVersion int) (string, error) {
 		return "", err
 	}
 	if metaVersion >= 24 {
-		if len(plain) < 32 {
+		if len(plain) < sha256.Size {
 			return "", errors.New("復号結果がハッシュプレフィックスより短いです")
 		}
-		plain = plain[32:]
+		// 🚨 先頭 32 バイトは SHA256(host_key) でなければならない。落とすだけにしない。
+		// 鍵違いの復号でも PKCS7 の末尾は約 1/256 で偶然通り、v24 の値は長いので 32 バイトを
+		// 落としても何かが残る。照合しないと、数千件の Cookie があれば鍵違いでも「復号できた」
+		// ものが混ざり、全件復号失敗の検出（readProfileCookies）が働かない。
+		//
+		// 根拠: Chromium net/extras/sqlite/sqlite_persistent_cookie_store.cc は DB version 24 で
+		// 暗号化前の値に SHA256(domain)（domain = host_key 列）を前置し、読み込み時に
+		// 復号結果の先頭 crypto::kSHA256Length バイトがそのハッシュと一致しない Cookie を捨てる
+		// （別ドメインへの Cookie の付け替え対策）。
+		// ⚠ 実機の Chrome での照合結果は未確認（main agent が確認する）。ここを誤ると
+		// 正常な Cookie が全部復号失敗になり「全件復号できない」エラーになる。
+		want := sha256.Sum256([]byte(hostKey))
+		if subtle.ConstantTimeCompare(plain[:sha256.Size], want[:]) != 1 {
+			return "", errors.New("復号結果のドメインハッシュが host_key と一致しません（鍵違いの可能性）")
+		}
+		plain = plain[sha256.Size:]
 	}
 	return string(plain), nil
 }
@@ -152,16 +171,38 @@ func cookieDBSourcePath(profile string) (string, error) {
 		filepath.Join(base, "Cookies"),
 	}
 	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
+		_, err := os.Stat(c)
+		if err == nil {
 			return c, nil
 		}
+		// 🚨 ENOENT 以外を「DB が無い」に丸めない（黙って飛ばすと、確かめられなかった事実が消える）。
+		// 権限（EACCES/EPERM）も含めてこのプロファイル固有の問題として記録する。chmod 000 や
+		// root 所有のプロファイル（sudo で起動した Chrome が作ったもの）はフルディスクアクセスを
+		// 付けても直らないので、自動検出全体を止めずに後ろの正常なプロファイルを使わせる。
+		// 権限かどうかは errors.Is(err, fs.ErrPermission) で辿れる（%w で包むこと）。
+		if !errors.Is(err, fs.ErrNotExist) {
+			if errors.Is(err, fs.ErrPermission) {
+				// -profile 明示時はこの文がそのまま利用者に届くので、直し方も添える。
+				return "", &profileDataError{err: fmt.Errorf("Cookie DB を確認できませんでした（アクセス拒否: %s）。\n%s  元エラー: %w", c, permissionHint, err)}
+			}
+			return "", &profileDataError{err: fmt.Errorf("Cookie DB を確認できませんでした（%s）: %w", c, err)}
+		}
 	}
-	return "", fmt.Errorf(
+	// 自動検出では「このプロファイルは飛ばす」合図になる型で返す（profile.go の resolveClient）。
+	return "", &profileWithoutSessionError{msg: fmt.Sprintf(
 		"Cookie DB が見つかりませんでした（プロファイル=%q）。探した場所:\n  %s\n"+
 			"  - プロファイル名が正しいか確認してください（-profile / NRQL_CHROME_PROFILE）。\n"+
 			"  - ~/Library/Application Support/%s/ 配下のディレクトリ名がプロファイル名です（既定は Default）。",
-		profile, strings.Join(candidates, "\n  "), chromeSupportSubdir)
+		profile, strings.Join(candidates, "\n  "), chromeSupportSubdir)}
 }
+
+// permissionHint は Cookie DB が権限で読めないときの案内。
+// フルディスクアクセスで直るのは端末アプリ側の制限だけで、chmod 000 や root 所有の
+// プロファイル（sudo で起動した Chrome が作ったもの）はパーミッション／所有者を直す必要がある。
+const permissionHint = "  次の両方を確認してください:\n" +
+	"    - ターミナル（またはこのツールを起動しているアプリ）の「フルディスクアクセス」\n" +
+	"      （システム設定 → プライバシーとセキュリティ → フルディスクアクセス）\n" +
+	"    - そのプロファイルのディレクトリと Cookies ファイルのパーミッション／所有者（ls -le で確認）\n"
 
 // --- 一時コピーの後始末 ---
 //
@@ -333,18 +374,20 @@ func copyCookieDB(src string) (string, func(), error) {
 		s := src + suffix
 		data, err := os.ReadFile(s)
 		if err != nil {
-			if suffix == "" {
-				cleanup()
-				if os.IsPermission(err) {
-					return "", nil, fmt.Errorf(
-						"Cookie DB を読み取れませんでした（アクセス拒否）。\n"+
-							"  ターミナル（またはこのツールを起動しているアプリ）に「フルディスクアクセス」を付与してください:\n"+
-							"    システム設定 → プライバシーとセキュリティ → フルディスクアクセス\n"+
-							"  対象ファイル: %s", src)
-				}
-				return "", nil, fmt.Errorf("Cookie DB の読み取りに失敗: %w", err)
+			// -wal / -shm は存在しないこともある。
+			// 🚨 ただし ENOENT 以外（権限・EIO）で読めないのを続行しない。WAL にしか無い
+			// セッション Cookie が落ちて「0 件」になり、自動検出が黙って飛ばす。
+			if suffix != "" && errors.Is(err, fs.ErrNotExist) {
+				continue
 			}
-			continue // -wal / -shm は存在しないこともある
+			cleanup()
+			if errors.Is(err, fs.ErrPermission) {
+				// プロファイル固有として記録する（上の cookieDBSourcePath と同じ理由）。
+				// 原因はフルディスクアクセス不足か、ファイルのパーミッション／所有者のどちらか。
+				return "", nil, &profileDataError{err: fmt.Errorf(
+					"Cookie DB を読み取れませんでした（アクセス拒否: %s）。\n%s  元エラー: %w", s, permissionHint, err)}
+			}
+			return "", nil, &profileDataError{err: fmt.Errorf("Cookie DB の読み取りに失敗（%s）: %w", s, err)}
 		}
 		dst := filepath.Join(tmpdir, "Cookies"+suffix)
 		if err := os.WriteFile(dst, data, 0o600); err != nil {
@@ -361,13 +404,21 @@ func extractCookies(profile string) ([]cookieEntry, error) {
 
 	password, err := getKeychainPassword()
 	if err != nil {
-		return nil, err
+		return nil, err // 型なし = 環境エラー（プロファイルに依存しない）
 	}
 	key, err := deriveKey(password)
 	if err != nil {
 		return nil, err
 	}
+	return readProfileCookies(profile, key)
+}
 
+// readProfileCookies は Keychain から得た鍵で、プロファイルの Cookie DB を読んで復号する。
+// Keychain を読まないので、テストから本物の sqlite で実行できる。
+//
+// Keychain を読めた後の失敗（sqlite でない・テーブルが無い・全件復号できない）は
+// このプロファイル固有の問題なので profileDataError で返す（自動検出は記録して次へ進む）。
+func readProfileCookies(profile string, key []byte) ([]cookieEntry, error) {
 	src, err := cookieDBSourcePath(profile)
 	if err != nil {
 		return nil, err
@@ -380,7 +431,7 @@ func extractCookies(profile string) ([]cookieEntry, error) {
 
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		return nil, err
+		return nil, &profileDataError{err: fmt.Errorf("Cookie DB を開けません: %w", err)}
 	}
 	defer db.Close()
 
@@ -392,28 +443,40 @@ func extractCookies(profile string) ([]cookieEntry, error) {
 
 	rows, err := db.Query(`SELECT host_key, name, value, encrypted_value FROM cookies`)
 	if err != nil {
-		return nil, fmt.Errorf("cookies テーブルの読み取りに失敗: %w", err)
+		return nil, &profileDataError{err: fmt.Errorf("cookies テーブルの読み取りに失敗: %w", err)}
 	}
 	defer rows.Close()
 
 	var out []cookieEntry
+	var tried, decrypted int
 	for rows.Next() {
 		var host, name, plainValue string
 		var enc []byte
 		if err := rows.Scan(&host, &name, &plainValue, &enc); err != nil {
-			return nil, err
+			return nil, &profileDataError{err: fmt.Errorf("cookies テーブルの読み取りに失敗: %w", err)}
 		}
 		value := plainValue
 		if value == "" && len(enc) > 0 {
-			v, derr := decryptValue(enc, key, metaVersion)
+			tried++
+			v, derr := decryptValue(enc, key, metaVersion, host)
 			if derr != nil {
 				continue // 1 件の復号失敗で全体を止めない
 			}
+			decrypted++
 			value = v
 		}
 		out = append(out, cookieEntry{host: host, name: name, value: value})
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, &profileDataError{err: fmt.Errorf("cookies テーブルの読み取りに失敗: %w", err)}
+	}
+	// 🚨 全件の復号失敗を「Cookie 0 件」（= セッションが無い）に化けさせない。
+	// 鍵がこの DB と合っていない（Keychain の項目が作り直された等）ことを示す。
+	if tried > 0 && decrypted == 0 {
+		return nil, &profileDataError{err: fmt.Errorf(
+			"暗号化された Cookie を 1 件も復号できませんでした（%d 件）。Keychain の鍵がこのプロファイルと合っていない可能性があります", tried)}
+	}
+	return out, nil
 }
 
 // cookieHostMatches は Cookie の host_key が対象ホストに送信されるべきか判定する。

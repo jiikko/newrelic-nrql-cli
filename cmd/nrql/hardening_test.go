@@ -77,6 +77,18 @@ func TestRunNRQLDistinguishesMissingAccountFromEmptyResult(t *testing.T) {
 			errSubstr: "実行結果が返りませんでした",
 		},
 		{
+			name:      "results が null",
+			body:      `{"data":{"actor":{"account":{"nrql":{"results":null}}}}}`,
+			wantErr:   true,
+			errSubstr: "null",
+		},
+		{
+			name:      "results が欠けている",
+			body:      `{"data":{"actor":{"account":{"nrql":{}}}}}`,
+			wantErr:   true,
+			errSubstr: "null",
+		},
+		{
 			name:     "本物の 0 件",
 			body:     `{"data":{"actor":{"account":{"nrql":{"results":[]}}}}}`,
 			wantErr:  false,
@@ -270,5 +282,71 @@ func TestParseFileConfigKeepsReadableFieldsOnError(t *testing.T) {
 	}
 	if int(ok.Account) != 1234567 || ok.Region != "us" {
 		t.Errorf("正常な設定を読めていない: %+v", ok)
+	}
+}
+
+// fakeNerdGraph は固定の本文を返す NerdGraph の代役。
+func fakeNerdGraph(t *testing.T, body string) *client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return &client{http: srv.Client(), endpoint: srv.URL, mode: authCookie, profile: "Default"}
+}
+
+// ⑥ nrql accounts も「引けなかった」と「0 件だった」を分けること（② と同じ形）。
+//
+// 値型の struct だと actor: null / accounts: null がゼロ値になり、
+// 「アクセスできるアカウントがありません」rc=0 に化ける。
+func TestAccountsDistinguishesNullFromEmpty(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantErr bool
+		want    int
+	}{
+		{name: "actor が null", body: `{"data":{"actor":null}}`, wantErr: true},
+		{name: "data が null", body: `{"data":null}`, wantErr: true},
+		{name: "accounts が null", body: `{"data":{"actor":{"accounts":null}}}`, wantErr: true},
+		{name: "本物の 0 件", body: `{"data":{"actor":{"accounts":[]}}}`, want: 0},
+		{name: "2 件", body: `{"data":{"actor":{"accounts":[{"id":1,"name":"a"},{"id":2,"name":"b"}]}}}`, want: 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := fakeNerdGraph(t, c.body).accounts()
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("エラーになるべきだが %d 件・err=nil（「0 件」に化けている）", len(got))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("エラーになってはいけない: %v", err)
+			}
+			if len(got) != c.want {
+				t.Errorf("件数: got %d, want %d", len(got), c.want)
+			}
+		})
+	}
+}
+
+// ⑦ ping も actor / user が null なら「認証が通った」にしないこと（② と同じ形）。
+//
+// ping の成功はプロファイル自動検出で「このプロファイルを使う」根拠になる。
+// null を成功扱いにすると、認証を確かめられていないプロファイルを選ぶ。
+func TestPingRejectsNullUser(t *testing.T) {
+	for _, body := range []string{
+		`{"data":{"actor":null}}`,
+		`{"data":{"actor":{"user":null}}}`,
+		`{"data":null}`,
+	} {
+		if err := fakeNerdGraph(t, body).ping(); err == nil {
+			t.Errorf("%s: 認証を確かめられていないのに成功扱いになった", body)
+		}
+	}
+	if err := fakeNerdGraph(t, `{"data":{"actor":{"user":{"name":"x"}}}}`).ping(); err != nil {
+		t.Errorf("正常な応答でエラーになった: %v", err)
 	}
 }

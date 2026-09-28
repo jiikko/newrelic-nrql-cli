@@ -59,7 +59,8 @@ type nrqlResponse struct {
 }
 
 type nrqlResult struct {
-	Results []json.RawMessage `json:"results"`
+	// ポインタにするのは results: null（と欠落）を「0 件」（[]）と分けるため。
+	Results *[]json.RawMessage `json:"results"`
 }
 
 // runNRQL は NRQL を実行して結果行を返す。
@@ -75,8 +76,11 @@ func (c *client) runNRQL(accountIDs []int, query string) ([]resultRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows := make([]resultRow, 0, len(result.Results))
-	for i, raw := range result.Results {
+	if result.Results == nil {
+		return nil, fmt.Errorf("NRQL の結果（results）が null で返りました（アカウント %s）", formatAccountIDs(accountIDs))
+	}
+	rows := make([]resultRow, 0, len(*result.Results))
+	for i, raw := range *result.Results {
 		r, err := decodeResultRow(raw)
 		if err != nil {
 			return nil, fmt.Errorf("結果 %d 行目の解釈に失敗: %w", i+1, err)
@@ -136,14 +140,20 @@ type account struct {
 }
 
 // accounts はアクセスできるアカウント一覧を返す。
+//
+// 🚨 nrqlResponse と同じ理由で actor / accounts をポインタで受ける。値型にすると
+// data.actor: null がゼロ値になり、「アクセスできるアカウントがありません」rc=0 に化ける。
 func (c *client) accounts() ([]account, error) {
 	var resp struct {
-		Actor struct {
-			Accounts []account `json:"accounts"`
+		Actor *struct {
+			Accounts *[]account `json:"accounts"`
 		} `json:"actor"`
 	}
 	if err := c.graphQL("{ actor { accounts { id name } } }", &resp); err != nil {
 		return nil, err
 	}
-	return resp.Actor.Accounts, nil
+	if resp.Actor == nil || resp.Actor.Accounts == nil {
+		return nil, fmt.Errorf("アカウント一覧が返りませんでした（NerdGraph が actor / accounts を null で返しました）")
+	}
+	return *resp.Actor.Accounts, nil
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -176,6 +177,26 @@ func (e *graphQLError) Error() string {
 	return "NerdGraph エラー: " + strings.Join(e.messages, " / ")
 }
 
+// requestError は送信・受信そのものの失敗（ネットワーク断・タイムアウト）。
+type requestError struct{ err error }
+
+func (e *requestError) Error() string { return e.err.Error() }
+func (e *requestError) Unwrap() error { return e.err }
+
+// statusError は 200 / 3xx / 401 / 403 以外の HTTP ステータス（429・5xx など）。
+type statusError struct {
+	status int
+	msg    string
+}
+
+func (e *statusError) Error() string { return e.msg }
+
+// nonJSONResponseError は 200 なのに本文が JSON でなかったこと（典型的にはログインページの HTML）。
+type nonJSONResponseError struct{ err error }
+
+func (e *nonJSONResponseError) Error() string { return e.err.Error() }
+func (e *nonJSONResponseError) Unwrap() error { return e.err }
+
 // graphQL は GraphQL ドキュメントを POST し、data を out にデコードする。
 // 数値は json.Number で受けるため、out 側の map[string]any には指数表記でなく
 // 元の表記のまま入る（NRQL の count が 1.23456e+06 になるのを避ける）。
@@ -200,7 +221,7 @@ func (c *client) graphQL(document string, out any) error {
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("リクエスト失敗（%s）: %w", c.endpoint, err)
+		return &requestError{err: fmt.Errorf("リクエスト失敗（%s）: %w", c.endpoint, err)}
 	}
 	defer resp.Body.Close()
 
@@ -209,7 +230,7 @@ func (c *client) graphQL(document string, out any) error {
 	// 見当違いの診断へ誘導してしまう（コメントがそう案内しているため）。
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return fmt.Errorf("レスポンスの受信に失敗（%s）: %w", c.endpoint, err)
+		return &requestError{err: fmt.Errorf("レスポンスの受信に失敗（%s）: %w", c.endpoint, err)}
 	}
 	if int64(len(body)) > maxResponseBytes {
 		return fmt.Errorf("レスポンスが大きすぎます（%d バイト超）。LIMIT や SINCE でクエリの範囲を絞ってください",
@@ -245,9 +266,10 @@ func (c *client) graphQL(document string, out any) error {
 			host:    hostOf(c.endpoint),
 		}
 	case resp.StatusCode == http.StatusTooManyRequests:
-		return fmt.Errorf("レート制限（429）。しばらく待って再実行してください")
+		return &statusError{status: resp.StatusCode, msg: "レート制限（429）。しばらく待って再実行してください"}
 	default:
-		return fmt.Errorf("予期しないステータス %d: %s\n%s", resp.StatusCode, c.endpoint, truncate(string(body), 500))
+		return &statusError{status: resp.StatusCode,
+			msg: fmt.Sprintf("予期しないステータス %d: %s\n%s", resp.StatusCode, c.endpoint, truncate(string(body), 500))}
 	}
 
 	var envelope struct {
@@ -259,8 +281,8 @@ func (c *client) graphQL(document string, out any) error {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	if err := dec.Decode(&envelope); err != nil {
 		// HTML が返るのは典型的にログインページへのリダイレクト。
-		return fmt.Errorf("レスポンスを JSON として解釈できません（%s）: %w\n%s",
-			c.endpoint, err, truncate(string(body), 300))
+		return &nonJSONResponseError{err: fmt.Errorf("レスポンスを JSON として解釈できません（%s）: %w\n%s",
+			c.endpoint, err, truncate(string(body), 300))}
 	}
 	if len(envelope.Errors) > 0 {
 		msgs := make([]string, 0, len(envelope.Errors))
@@ -277,16 +299,30 @@ func (c *client) graphQL(document string, out any) error {
 	return d.Decode(out)
 }
 
+// errPingUnverified は ping が 200 を受けたのに user を確かめられなかったことを示す。
+// 自動検出では「このプロファイルは認証が通らない」側（次の候補へ進む）に数える。
+var errPingUnverified = errors.New("NerdGraph がユーザー情報を返しませんでした（認証を確認できません）")
+
 // ping は認証が通るかだけを確かめる軽いクエリ（プロファイル自動検出で使う）。
+//
+// 🚨 actor / user をポインタで受ける（nrqlResponse と同じ理由）。値型だと
+// data.actor: null が「認証が通った」になり、確かめられていないプロファイルを選ぶ。
+// null のときの実際の応答は未実測（ログイン切れは 3xx / 401 / 403 で返ることを実測済み）。
 func (c *client) ping() error {
 	var v struct {
-		Actor struct {
-			User struct {
+		Actor *struct {
+			User *struct {
 				Name string `json:"name"`
 			} `json:"user"`
 		} `json:"actor"`
 	}
-	return c.graphQL("{ actor { user { name } } }", &v)
+	if err := c.graphQL("{ actor { user { name } } }", &v); err != nil {
+		return err
+	}
+	if v.Actor == nil || v.Actor.User == nil {
+		return errPingUnverified
+	}
+	return nil
 }
 
 // hostOf は URL からホスト部だけを取り出す（診断メッセージ用。失敗しても案内を止めない）。

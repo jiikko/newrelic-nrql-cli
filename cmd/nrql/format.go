@@ -12,7 +12,7 @@ import (
 
 // resultRow は NRQL の結果 1 行。
 //
-// キー順を保持するのが目的の型。NRQL は SELECT の並び（facet, count など）に
+// キー順を保持するのが目的の型。NerdGraph の応答の並び（facet が先頭など）に
 // 意味があるが、map[string]any へ入れるとその順序が失われ、出力カラムの順が
 // 実行ごとに変わる。そのため JSON を Token 単位で読んで keys を別に持つ。
 type resultRow struct {
@@ -236,20 +236,63 @@ func displayWidth(s string) int {
 }
 
 // renderJSON は結果をそのまま JSON 配列で書き出す。
+//
+// 🚨 行を map[string]any にして encoding/json へ渡さない。map のキーはアルファベット順に
+// 並び替えられ、TSV / table が保っている応答の列順が JSON だけ失われる。
+// 各行は orderedRow（列順でキーを書く Marshaler）で渡し、インデントと
+// HTML エスケープ無効化は外側の Encoder の設定に任せる。
 func renderJSON(w io.Writer, rows []resultRow) error {
 	cols := columnsOf(rows)
-	out := make([]map[string]any, 0, len(rows))
+	out := make([]orderedRow, 0, len(rows))
 	for _, r := range rows {
-		m := make(map[string]any, len(r.keys))
-		for _, c := range cols {
-			if v, ok := r.values[c]; ok {
-				m[c] = v
-			}
-		}
-		out = append(out, m)
+		out = append(out, orderedRow{row: r, cols: cols})
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
 	return enc.Encode(out)
+}
+
+// orderedRow は 1 行を cols の順で JSON オブジェクトにする。行に無いキーは出さない。
+type orderedRow struct {
+	row  resultRow
+	cols []string
+}
+
+func (o orderedRow) MarshalJSON() ([]byte, error) {
+	var b bytes.Buffer
+	b.WriteByte('{')
+	first := true
+	for _, c := range o.cols {
+		v, ok := o.row.values[c]
+		if !ok {
+			continue
+		}
+		if !first {
+			b.WriteByte(',')
+		}
+		first = false
+		if err := writeJSONValue(&b, c); err != nil {
+			return nil, err
+		}
+		b.WriteByte(':')
+		if err := writeJSONValue(&b, v); err != nil {
+			return nil, err
+		}
+	}
+	b.WriteByte('}')
+	return b.Bytes(), nil
+}
+
+// writeJSONValue は v を HTML エスケープせずに書く。
+// json.Marshal は < > & を \u003c 等へ変えるが、外側の Encoder は Marshaler の出力を
+// 戻さないので、ここで SetEscapeHTML(false) の Encoder を使って揃える。
+func writeJSONValue(b *bytes.Buffer, v any) error {
+	enc := json.NewEncoder(b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return err
+	}
+	b.Truncate(b.Len() - 1) // Encode が付ける末尾の改行を落とす
+	return nil
 }

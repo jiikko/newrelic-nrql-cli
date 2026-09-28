@@ -106,8 +106,8 @@ const queryHelp = `nrql query - NRQL を実行する
   （共通オプション -region / -profile は nrql --help を参照）
 
 出力:
-  NRQL の結果カラムを SELECT の並び順で出す。FACET 等で行ごとにカラムが欠ける場合は
-  全行の和集合を取り、欠けたセルは空にする。
+  NRQL の結果カラムを New Relic が返した並び順で出す（SELECT の順とは限らない）。
+  FACET 等で行ごとにカラムが欠ける場合は全行の和集合を取り、欠けたセルは空にする。
 
 例:
   nrql -a 1234567 "SELECT count(*) FROM Transaction SINCE 30 minutes ago"
