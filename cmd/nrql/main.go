@@ -160,6 +160,7 @@ func init() {
 func main() {
 	// Chrome の Cookie DB の一時コピーを、Ctrl-C でも残さないようにする（cookies.go の②）。
 	installCleanupOnSignal()
+	sweepStaleCookieDirs() // ③: 資格情報を読まないコマンド（help 等）でも前回の残骸を消す
 
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, topUsage)

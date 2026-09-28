@@ -180,10 +180,11 @@ go vet ./...
 go test ./...
 ```
 
-Chrome の保存領域を復号する部分（`cmd/nrql/cookies.go`）は
-[jiikko/esa-cli](https://github.com/jiikko/esa-cli) からの移植です。どちらも macOS + Chrome 専用
-です（esa-cli も Brave / Chromium / Edge / Vivaldi の対応を落としました）。復号の仕様は共通なので、
-そこを直す場合は両方に当ててください。
+Chrome の保存領域を復号する部分（復号・一時コピーの後始末・プロファイルの列挙）は、esa-cli / slack-cli と共有する
+[`github.com/jiikko/dotfiles/src/chromecookie`](https://github.com/jiikko/dotfiles/tree/master/src/chromecookie) にあります
+（macOS + Chrome 専用）。**直すときはあちらを直し**、`go get github.com/jiikko/dotfiles/src/chromecookie@master` で
+取り込み直してください（tag は打っていません）。`cmd/nrql/cookies.go` に残っているのは、どの Cookie を送るかと
+自動検出の分類への写し替えだけです。
 
 ## ライセンス
 

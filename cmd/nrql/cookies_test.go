@@ -1,13 +1,14 @@
 package main
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/sha256"
-	"encoding/hex"
 	"strings"
 	"testing"
+
+	"github.com/jiikko/dotfiles/src/chromecookie"
 )
+
+// 復号（鍵導出・PKCS7・v24 のホストハッシュ）のテストは chromecookie 側にある。
+// ここは newrelic-nrql-cli が決めていること（どの Cookie を送るか）と、送信先の照合の回帰表だけ。
 
 // 送信先ホストの判定。ここが緩むと **無関係なサイトのセッションを New Relic へ送る**、
 // 逆に厳しすぎると正当な Cookie を取りこぼしてログイン済みなのに認証が通らない。
@@ -39,8 +40,8 @@ func TestCookieHostMatches(t *testing.T) {
 		{hostKey: "one.newrelic.com.", want: false, why: "末尾ドット"},
 	}
 	for _, c := range cases {
-		if got := cookieHostMatches(c.hostKey, req); got != c.want {
-			t.Errorf("cookieHostMatches(%q, %q) = %v, want %v（%s）", c.hostKey, req, got, c.want, c.why)
+		if got := chromecookie.HostMatches(c.hostKey, req); got != c.want {
+			t.Errorf("HostMatches(%q, %q) = %v, want %v（%s）", c.hostKey, req, got, c.want, c.why)
 		}
 	}
 }
@@ -55,11 +56,11 @@ func TestBuildCookieHeaderPrefersMoreSpecificHost(t *testing.T) {
 	// 優先順位のロジックを壊す変異を検出できない（実測で素通りした）。
 	// ここでは同じ rank になりうる .one.newrelic.com を先に置いてある。
 	entries := []cookieEntry{
-		{host: ".newrelic.com", name: "session", value: "domain-wide"},
-		{host: ".one.newrelic.com", name: "session", value: "sub-domain"},
-		{host: "one.newrelic.com", name: "session", value: "host-only"},
-		{host: "evil.example.jp", name: "session", value: "unrelated"},
-		{host: ".newrelic.com", name: "other", value: "keep"},
+		{Host: ".newrelic.com", Name: "session", Value: "domain-wide"},
+		{Host: ".one.newrelic.com", Name: "session", Value: "sub-domain"},
+		{Host: "one.newrelic.com", Name: "session", Value: "host-only"},
+		{Host: "evil.example.jp", Name: "session", Value: "unrelated"},
+		{Host: ".newrelic.com", Name: "other", Value: "keep"},
 	}
 	header, n := buildCookieHeader(entries, "one.newrelic.com")
 
@@ -82,199 +83,4 @@ func TestBuildCookieHeaderPrefersMoreSpecificHost(t *testing.T) {
 	if h, n := buildCookieHeader(entries, "example.com"); n != 0 || h != "" {
 		t.Errorf("無関係なホストへ送ろうとしている: n=%d header=%q", n, h)
 	}
-}
-
-// 鍵導出のパラメータを固定する。
-//
-// 期待値は Go の実装ではなく Python の hashlib で独立に算出したもの
-// （production と同じ式で期待値を作ると、パラメータを変える変異を検出できない）。
-// salt・反復回数・鍵長のどれが変わっても落ちる。
-func TestDeriveKeyMatchesChromeParameters(t *testing.T) {
-	cases := []struct {
-		password string
-		wantHex  string // python: hashlib.pbkdf2_hmac("sha1", pw, b"saltysalt", 1003, 16)
-	}{
-		{password: "peanuts", wantHex: "d9a09d499b4e1b7461f28e67972c6dbd"},
-		{password: "testpassword", wantHex: "6fbfc7e7025290f47d9c2a84d67d5fd5"},
-	}
-	for _, c := range cases {
-		key, err := deriveKey([]byte(c.password))
-		if err != nil {
-			t.Fatalf("deriveKey(%q): %v", c.password, err)
-		}
-		if got := hex.EncodeToString(key); got != c.wantHex {
-			t.Errorf("deriveKey(%q) = %s, want %s（salt / 反復回数 / 鍵長のいずれかが変わっている）",
-				c.password, got, c.wantHex)
-		}
-	}
-}
-
-// PKCS7 のパディング除去。不正なパディングを通すと、復号結果の末尾に
-// ゴミが残った Cookie 値を送ることになる。
-func TestPKCS7Unpad(t *testing.T) {
-	cases := []struct {
-		name    string
-		data    []byte
-		want    string
-		wantErr bool
-	}{
-		{name: "正常（4 バイト分）", data: append([]byte("abcdefghijkl"), 4, 4, 4, 4), want: "abcdefghijkl"},
-		{name: "全部パディング", data: []byte{16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16}, want: ""},
-		{name: "空", data: []byte{}, wantErr: true},
-		{name: "ブロック長の倍数でない", data: []byte{1, 2, 3}, wantErr: true},
-		{name: "パディングが 0", data: append([]byte("abcdefghijklmno"), 0), wantErr: true},
-		{name: "パディングがブロック長超", data: append([]byte("abcdefghijklmno"), 17), wantErr: true},
-		{name: "パディングバイトが揃っていない", data: append([]byte("abcdefghijkl"), 1, 2, 3, 4), wantErr: true},
-	}
-	for _, c := range cases {
-		got, err := pkcs7Unpad(c.data, aes.BlockSize)
-		if (err != nil) != c.wantErr {
-			t.Errorf("%s: err=%v, wantErr=%v", c.name, err, c.wantErr)
-			continue
-		}
-		if err == nil && string(got) != c.want {
-			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
-		}
-	}
-}
-
-// 復号の本体。暗号文はテスト側で stdlib を直接使って作る
-// （production の暗号化関数は存在しないので、これが独立したオラクルになる）。
-func TestDecryptValue(t *testing.T) {
-	key, err := deriveKey([]byte("testpassword"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Run("v10 の暗号文を復号できる", func(t *testing.T) {
-		enc := encryptForTest(t, key, []byte("session-value"))
-		got, err := decryptValue(enc, key, 0, ".newrelic.com")
-		if err != nil {
-			t.Fatalf("decryptValue: %v", err)
-		}
-		if got != "session-value" {
-			t.Errorf("got %q, want %q", got, "session-value")
-		}
-	})
-
-	t.Run("Chrome 130+ は先頭 32 バイトのハッシュを照合して落とす", func(t *testing.T) {
-		plain := withHostHash(".newrelic.com", "session-value") // 先頭 32 バイトは SHA256(host_key)
-		enc := encryptForTest(t, key, plain)
-
-		got, err := decryptValue(enc, key, 24, ".newrelic.com") // meta.version >= 24
-		if err != nil {
-			t.Fatalf("decryptValue: %v", err)
-		}
-		if got != "session-value" {
-			t.Errorf("ハッシュプレフィックスが落ちていない: got %q", got)
-		}
-
-		// 古い Chrome（version < 24）では落としてはいけない。
-		// ハッシュが別ホストのものなら復号失敗（Chromium も捨てる）。
-		if _, err := decryptValue(enc, key, 24, "one.newrelic.com"); err == nil {
-			t.Error("host_key と一致しないハッシュを通している")
-		}
-
-		old, err := decryptValue(enc, key, 23, ".newrelic.com")
-		if err != nil {
-			t.Fatalf("decryptValue: %v", err)
-		}
-		if len(old) != len(plain) {
-			t.Errorf("古い版で 32 バイトを落としている: len=%d, want %d", len(old), len(plain))
-		}
-	})
-
-	t.Run("鍵が違うと元の値にならない", func(t *testing.T) {
-		enc := encryptForTest(t, key, []byte("session-value"))
-		other, err := deriveKey([]byte("wrongpassword"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, err := decryptValue(enc, other, 0, ".newrelic.com")
-		if err == nil && got == "session-value" {
-			t.Error("違う鍵で復号できてしまった")
-		}
-	})
-
-	t.Run("v24 で鍵違いの PKCS7 が偶然通ってもドメインハッシュで弾く", func(t *testing.T) {
-		other, err := deriveKey([]byte("wrongpassword"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		enc := luckyWrongKeyCiphertext(t, other, key, ".newrelic.com")
-		if _, err := pkcs7UnpadForLuckyCheck(enc, key); err != nil {
-			t.Fatalf("前提: この暗号文は PKCS7 を通るはず: %v", err)
-		}
-		if got, err := decryptValue(enc, key, 24, ".newrelic.com"); err == nil {
-			t.Errorf("鍵違いを復号できたことにしている（%d バイト）", len(got))
-		}
-	})
-
-	t.Run("v10 でない値は平文として返す", func(t *testing.T) {
-		got, err := decryptValue([]byte("plain-old-value"), key, 0, ".newrelic.com")
-		if err != nil {
-			t.Fatalf("decryptValue: %v", err)
-		}
-		if got != "plain-old-value" {
-			t.Errorf("got %q", got)
-		}
-	})
-
-	t.Run("空の値", func(t *testing.T) {
-		got, err := decryptValue(nil, key, 0, ".newrelic.com")
-		if err != nil || got != "" {
-			t.Errorf("got %q err=%v", got, err)
-		}
-	})
-
-	t.Run("ブロック長に合わない暗号文はエラー", func(t *testing.T) {
-		if _, err := decryptValue([]byte("v10abc"), key, 0, ".newrelic.com"); err == nil {
-			t.Error("エラーになるべき")
-		}
-	})
-
-	t.Run("復号結果がハッシュプレフィックスより短いとエラー", func(t *testing.T) {
-		enc := encryptForTest(t, key, []byte("short")) // 32 バイト未満
-		if _, err := decryptValue(enc, key, 24, ".newrelic.com"); err == nil {
-			t.Error("エラーになるべき")
-		}
-	})
-}
-
-// pkcs7UnpadForLuckyCheck は fixture の前提（PKCS7 が偶然通る）を production の unpad で確かめる。
-func pkcs7UnpadForLuckyCheck(enc, key []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	ct := enc[3:]
-	plain := make([]byte, len(ct))
-	cipher.NewCBCDecrypter(block, []byte("                ")).CryptBlocks(plain, ct)
-	return pkcs7Unpad(plain, aes.BlockSize)
-}
-
-// withHostHash は Chrome の DB version 24 以降の平文（SHA256(host_key) + 値）を作る。
-func withHostHash(hostKey, value string) []byte {
-	h := sha256.Sum256([]byte(hostKey))
-	return append(h[:], []byte(value)...)
-}
-
-// encryptForTest は Chrome と同じ形式（v10 + AES-128-CBC + IV=0x20*16 + PKCS7）で暗号化する。
-// production 側に暗号化の実装は無いので、これは独立したオラクルとして働く。
-func encryptForTest(t *testing.T, key, plain []byte) []byte {
-	t.Helper()
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pad := aes.BlockSize - len(plain)%aes.BlockSize
-	padded := make([]byte, 0, len(plain)+pad)
-	padded = append(padded, plain...)
-	for i := 0; i < pad; i++ {
-		padded = append(padded, byte(pad))
-	}
-	iv := []byte("                ") // 0x20 * 16
-	out := make([]byte, len(padded))
-	cipher.NewCBCEncrypter(block, iv).CryptBlocks(out, padded)
-	return append([]byte("v10"), out...)
 }

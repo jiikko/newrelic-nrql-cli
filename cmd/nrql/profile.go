@@ -1,15 +1,14 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
+
+	"github.com/jiikko/dotfiles/src/chromecookie"
 )
 
 // profileAuto は「New Relic にログイン済みのプロファイルを自動検出する」予約値。
@@ -187,76 +186,28 @@ func (e *profileDataError) Unwrap() error { return e.err }
 // cookieClientForProfile は指定プロファイルのセッションでクライアントを作る。
 // New Relic 宛てのものが 1 つも無ければ profileWithoutSessionError（自動検出時は次の候補へ進む合図）。
 func cookieClientForProfile(ep endpoints, host, profile string, timeoutSeconds int) (*client, error) {
-	entries, err := extractCookiesFn(profile)
+	res, err := extractCookiesFn(profile)
 	if err != nil {
 		return nil, err
 	}
-	header, n := buildCookieHeader(entries, host)
+	header, n := buildCookieHeader(res.Cookies, host)
 	if n == 0 {
+		// 🚨 「セッションが無い」に化けさせない: 全件の復号失敗（鍵違い）・-wal を読めない、は記録して飛ばす。
+		if derr := res.Diagnose(host + " 宛ての Cookie "); derr != nil {
+			return nil, classifyReadError(derr)
+		}
 		return nil, &profileWithoutSessionError{msg: fmt.Sprintf("%s のセッションがプロファイル %q にありません", host, profile)}
 	}
 	return newCookieClient(ep, header, profile, timeoutSeconds), nil
 }
 
-// listChromeProfiles は Chrome の Local State からプロファイルのディレクトリ名を列挙する。
-// 読み取れない場合は実在するディレクトリを走査する。
+// listChromeProfiles は Chrome の Local State からプロファイルのディレクトリ名を列挙する（直近に使ったものが先頭）。
+// 読み取れない場合は実在するディレクトリを走査する（chromecookie.ListProfiles）。
 func listChromeProfiles() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return []string{"Default"}
+	ps := chromecookie.ListProfiles()
+	out := make([]string, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, p.Dir)
 	}
-	lsPath := filepath.Join(home, "Library", "Application Support", chromeSupportSubdir, "Local State")
-	data, err := os.ReadFile(lsPath)
-	if err != nil {
-		return fallbackProfiles(home)
-	}
-	// info_cache のキー（プロファイルのディレクトリ名）だけを取り出す。他のフィールドは読まない。
-	var ls struct {
-		Profile struct {
-			InfoCache map[string]json.RawMessage `json:"info_cache"`
-			LastUsed  string                     `json:"last_used"`
-		} `json:"profile"`
-	}
-	if err := json.Unmarshal(data, &ls); err != nil || len(ls.Profile.InfoCache) == 0 {
-		return fallbackProfiles(home)
-	}
-	profiles := make([]string, 0, len(ls.Profile.InfoCache))
-	for dir := range ls.Profile.InfoCache {
-		profiles = append(profiles, dir)
-	}
-	sort.Strings(profiles)
-	// 直近に使われたプロファイルを先頭へ寄せる（検出を速くする）。
-	if lu := ls.Profile.LastUsed; lu != "" {
-		for i, p := range profiles {
-			if p == lu {
-				profiles = append([]string{p}, append(profiles[:i:i], profiles[i+1:]...)...)
-				break
-			}
-		}
-	}
-	return profiles
-}
-
-// fallbackProfiles は Local State が読めないときに、実在するディレクトリを走査する。
-func fallbackProfiles(home string) []string {
-	base := filepath.Join(home, "Library", "Application Support", chromeSupportSubdir)
-	entries, err := os.ReadDir(base)
-	if err != nil {
-		return []string{"Default"}
-	}
-	var out []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if name == "Default" || strings.HasPrefix(name, "Profile ") {
-			out = append(out, name)
-		}
-	}
-	if len(out) == 0 {
-		return []string{"Default"}
-	}
-	sort.Strings(out)
 	return out
 }

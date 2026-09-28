@@ -3,10 +3,12 @@ module github.com/jiikko/newrelic-nrql-cli
 go 1.25.0
 
 require (
+	github.com/jiikko/dotfiles/src/chromecookie v0.0.0-20260928151137-2923dd58943a
 	github.com/mattn/go-runewidth v0.0.30
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.28.0
 )
+
+require modernc.org/sqlite v1.28.0 // indirect
 
 require (
 	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
