@@ -180,6 +180,12 @@ go vet ./...
 go test ./...
 ```
 
+Cookie DB は作業領域（`~/Library/Caches/newrelic-nrql-cli/extract`、0700）へコピーしてから読み、そのコピーは
+①正常終了・エラー ②シグナル（Ctrl-C 等）③次回起動時の掃除（`kill -9` 等で残ったもの）の 3 経路で削除します。
+作業領域がシンボリックリンク・他人の所有・group / other に権限がある状態なら使わずに止めます（v0.1.6 から。以前は `$TMPDIR/nrql-cookie`）。
+`-wal` / `-shm` を読めなくても、本体の Cookie DB に New Relic のセッションがあればそれを使い、無いときは読めなかったことを
+理由として添えて次のプロファイルへ進みます（v0.1.6 から）。
+
 Chrome の保存領域を復号する部分（復号・一時コピーの後始末・プロファイルの列挙）は、esa-cli / slack-cli と共有する
 [`github.com/jiikko/dotfiles/src/chromecookie`](https://github.com/jiikko/dotfiles/tree/master/src/chromecookie) にあります
 （macOS + Chrome 専用）。**直すときはあちらを直し**、`go get github.com/jiikko/dotfiles/src/chromecookie@master` で
