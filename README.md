@@ -192,6 +192,23 @@ Chrome の保存領域を復号する部分（復号・一時コピーの後始�
 取り込み直してください（tag は打っていません）。`cmd/nrql/cookies.go` に残っているのは、どの Cookie を送るかと
 自動検出の分類への写し替えだけです。
 
+## リリース
+
+1. `master` の CI が緑であることを確かめてから tag を打つ（`git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`）
+2. `curl -sL https://github.com/jiikko/newrelic-nrql-cli/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256` の値で、
+   [jiikko/homebrew-tap](https://github.com/jiikko/homebrew-tap) の `Formula/nrql.rb` の `url` と `sha256` を更新して push する
+3. **手元で入れ直して疎通を確かめる**（tag・tap・ソースからのビルドのどれかが壊れていても、ここまで来ないと分からない）
+
+```sh
+brew update
+brew uninstall jiikko/tap/nrql
+brew install jiikko/tap/nrql
+readlink -f "$(command -v nrql)"   # 新しい版の Cellar を指しているか
+nrql accounts                                               # 認証（Keychain → Cookie）とアカウント一覧
+nrql "SELECT count(*) FROM Transaction SINCE 30 minutes ago"  # クエリを実際に投げる
+ls ~/Library/Caches/newrelic-nrql-cli/extract   # 空であること（Cookie DB の一時コピーが残っていない）
+```
+
 ## ライセンス
 
 MIT
