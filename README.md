@@ -101,6 +101,9 @@ nrql help                         # ヘルプ
 本体は NRQL を投げる `query` で、`accounts` は最初にアカウント ID を調べるため、
 `config` はそれを保存して以後 `-a` を省くための補助です。
 
+`nrql --help` は概要とサブコマンドの一覧だけです。オプション・共通オプション（`-region` / `-timeout` / `-profile`）・環境変数・
+終了コード・注意の詳細は `nrql <サブコマンド> --help`（`nrql query --help` など）に出ます。`nrql config --help` も使えます。
+
 | オプション | 説明 |
 |---|---|
 | `-a`, `-account <id>` | アカウント ID。カンマ区切りで複数指定可（`-a 123,456`） |

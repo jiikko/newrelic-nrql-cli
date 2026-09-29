@@ -47,30 +47,34 @@ func registerCommon(fs *flag.FlagSet, cfg *config) {
 	fs.StringVar(&cfg.profile, "profile", resolveDefault("NRQL_CHROME_PROFILE", fc.Profile, profileAuto), "ブラウザのプロファイル名。既定 auto（自動検出）/ NRQL_CHROME_PROFILE")
 }
 
-const topUsage = `nrql - New Relic に NRQL を投げる CLI（読み取り専用 / ブラウザのログインセッションを利用）
+// topUsage は `nrql` / `nrql --help` の出力。概要とサブコマンドの一覧だけを持ち、詳細は各サブコマンドの --help に置く。
+const topUsage = `nrql - New Relic に NRQL を投げる CLI（読み取り専用 / Chrome のログインで認証）
 
-概要:
-  NRQL クエリを実行して結果を TSV / 表 / JSON で出力する。API キーの発行は不要で、
-  Google Chrome でログイン済みのセッションをそのまま借りる（無人環境では API キーも使える）。
+使い方:  nrql [オプション] "<NRQL>"         NRQL を実行する（nrql query の省略形）
+         nrql <サブコマンド> [オプション] [引数]
 
-使い方:
-  nrql [オプション] "<NRQL>"        クエリを実行する（query は省略可）
-  nrql query [オプション] "<NRQL>"  同上（明示形）
-  nrql accounts                     アクセスできるアカウント一覧
-  nrql config <sub>                 設定ファイルの表示・更新
-  nrql help                         このヘルプ
+サブコマンド:
+  query       NRQL を実行する（サブコマンドを省くとこれ）
+  accounts    アクセスできるアカウントの一覧を出す
+  config      設定ファイル（config.yml）を表示・更新する
+  help        このヘルプ
 
-オプション:
-  -a, -account <id>  アカウント ID。カンマ区切りで複数指定可（NEW_RELIC_ACCOUNT_ID / config.yml）
-  -format <fmt>      tsv（既定）/ table / json
-  -no-header         TSV のヘッダ行を出さない
-  -region <us|eu>    アカウントのデータセンター。既定 us（NEW_RELIC_REGION）
-  -timeout <秒>      1 リクエストの上限秒数。既定 60（NRQL_TIMEOUT / config.yml）
-  -profile <name>    Chrome のプロファイル。既定 auto=ログイン済みを自動検出（NRQL_CHROME_PROFILE）
+各サブコマンドの詳細（オプション・環境変数・終了コード・注意）:  nrql <サブコマンド> --help
+はじめて使うとき:  nrql accounts でアカウント ID を調べ、nrql config set account <ID> で保存する
+例:  nrql "SELECT count(*) FROM Transaction SINCE 30 minutes ago"
+`
 
-設定の優先順位: コマンドラインフラグ > 環境変数 > config.yml > 既定
-  例: nrql config set account 1234567
+// commonOptionsHelp は New Relic に問い合わせるサブコマンドの help に共通のオプションの説明（正本はここだけ）。
+const commonOptionsHelp = `
+共通オプション:
+  -region <us|eu>    アカウントのデータセンター。既定 us（NEW_RELIC_REGION / config.yml の region）
+  -timeout <秒>      1 リクエストの上限秒数。既定 60（NRQL_TIMEOUT / config.yml の timeout）
+  -profile <name>    Chrome のプロファイル。既定 auto=ログイン済みを自動検出（NRQL_CHROME_PROFILE / config.yml の profile）
+  優先順位: コマンドラインフラグ > 環境変数 > config.yml > 既定（詳細は nrql config --help）
+`
 
+// commonTailHelp は New Relic に問い合わせるサブコマンドの help の末尾に付ける、環境変数・終了コード・注意（正本はここだけ）。
+const commonTailHelp = `
 環境変数:
   NEW_RELIC_ACCOUNT_ID  既定のアカウント ID
   NEW_RELIC_REGION      us / eu。EU のアカウントは eu が要る（既定 us）
@@ -78,12 +82,6 @@ const topUsage = `nrql - New Relic に NRQL を投げる CLI（読み取り専�
   NEW_RELIC_API_KEY     User API key。設定するとブラウザを読まずに公開 NerdGraph を使う（CI 向け）
 
 終了コード: 0=成功 / 1=実行時エラー（セッション切れ・NRQL 構文エラー等） / 2=使い方の誤り
-
-例:
-  nrql "SELECT count(*) FROM Transaction SINCE 30 minutes ago"
-  nrql -format table "SELECT count(*) FROM Transaction FACET name SINCE 1 hour ago LIMIT 10"
-  nrql -format json "SELECT average(duration) FROM Transaction TIMESERIES" | jq '.[0]'
-  nrql -no-header "SELECT uniques(host) FROM Transaction" | sort
 
 注意:
   これは New Relic の非公開エンドポイントを叩く非公式ツール（macOS + Google Chrome 専用）。アイドルでセッションが切れると
@@ -103,7 +101,6 @@ const queryHelp = `nrql query - NRQL を実行する
                      例: -a 1234567,2345678（結果は合算。アカウント別には割れない）
   -format <fmt>      tsv（既定）/ table / json
   -no-header         TSV のヘッダ行を出さない
-  （共通オプション -region / -profile は nrql --help を参照）
 
 出力:
   NRQL の結果カラムを New Relic が返した並び順で出す（SELECT の順とは限らない）。
@@ -113,7 +110,9 @@ const queryHelp = `nrql query - NRQL を実行する
   nrql -a 1234567 "SELECT count(*) FROM Transaction SINCE 30 minutes ago"
   nrql -a 1234567 -format table "SELECT count(*) FROM Transaction FACET name LIMIT 10"
   nrql -a 1234567,2345678 "SELECT count(*) FROM Transaction SINCE 1 hour ago"   # 合算
-`
+  nrql -a 1234567 -format json "SELECT average(duration) FROM Transaction TIMESERIES" | jq '.[0]'
+  nrql -a 1234567 -no-header "SELECT uniques(host) FROM Transaction" | sort
+` + commonOptionsHelp + commonTailHelp
 
 const accountsHelp = `nrql accounts - アクセスできるアカウント一覧を出す
 
@@ -122,8 +121,7 @@ const accountsHelp = `nrql accounts - アクセスできるアカウント一覧
 
 オプション:
   -format <fmt>   tsv（既定）/ table / json
-  （共通オプション -region / -profile は nrql --help を参照）
-`
+` + commonOptionsHelp + commonTailHelp
 
 const configHelp = `nrql config - 設定ファイル（config.yml）を表示・更新する
 
@@ -140,6 +138,21 @@ key: account / region / profile / timeout
   nrql config set profile "Profile 3"
   nrql config set timeout 180
 `
+
+// containsHelpArg は config の引数にヘルプの要求があるかを返す（flag パッケージがヘルプとみなす 4 つの綴りはどの位置でも、help は先頭だけ）。
+func containsHelpArg(args []string) bool {
+	for i, a := range args {
+		switch a {
+		case "-h", "-help", "--h", "--help":
+			return true
+		case "help":
+			if i == 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // subcommands はサブコマンド名から実装への対応表。
 //
@@ -407,7 +420,10 @@ func cmdAccounts(args []string) error {
 }
 
 func cmdConfig(args []string) error {
-	if len(args) == 0 {
+	// --help はどの位置でもヘルプにする（以前は「不明なサブコマンド "--help"」、set --help は使い方エラーだった）。
+	// 値の位置でも正当にならない: account は正の整数、region は us / eu、timeout は正の整数、profile は Chrome の
+	// プロファイルのディレクトリ名（Default / Profile 3 等）で - では始まらない。help はサブコマンドの位置だけ。
+	if len(args) == 0 || containsHelpArg(args) {
 		fmt.Fprint(os.Stdout, configHelp)
 		return nil
 	}
