@@ -197,6 +197,7 @@ Chrome の保存領域を復号する部分（復号・一時コピーの後始�
 
 ## リリース
 
+0. `git fetch --tags` して `git tag --sort=-v:refname | head -3` で最新の版を確かめてから次の版を決める（別の作業が先に出していることがある）
 1. `master` の CI が緑であることを確かめてから tag を打つ（`git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`）
 2. `curl -sL https://github.com/jiikko/newrelic-nrql-cli/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256` の値で、
    [jiikko/homebrew-tap](https://github.com/jiikko/homebrew-tap) の `Formula/nrql.rb` の `url` と `sha256` を更新して push する
