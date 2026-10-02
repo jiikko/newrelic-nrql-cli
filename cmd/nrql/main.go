@@ -112,6 +112,15 @@ const queryHelp = `nrql query - NRQL を実行する
   nrql -a 1234567,2345678 "SELECT count(*) FROM Transaction SINCE 1 hour ago"   # 合算
   nrql -a 1234567 -format json "SELECT average(duration) FROM Transaction TIMESERIES" | jq '.[0]'
   nrql -a 1234567 -no-header "SELECT uniques(host) FROM Transaction" | sort
+
+イベント型・属性の調べ方（属性はアカウントごとに違うので、実データに聞く）:
+  # イベント型の一覧
+  nrql -a 1234567 "SHOW EVENT TYPES SINCE 1 day ago"
+  # 属性名と型（数千行になることがあるので grep で絞る）
+  nrql -a 1234567 "SELECT keyset() FROM Transaction SINCE 1 day ago" | grep -i duration
+
+NRQL の構文:  https://docs.newrelic.com/docs/nrql/nrql-syntax-clauses-functions/
+標準の属性:   https://docs.newrelic.com/attribute-dictionary/
 ` + commonOptionsHelp + commonTailHelp
 
 const accountsHelp = `nrql accounts - アクセスできるアカウント一覧を出す

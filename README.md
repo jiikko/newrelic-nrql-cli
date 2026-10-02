@@ -154,13 +154,31 @@ nrql -a 1234567,2345678 -format table \
 - `table`: 桁を揃えた表。人が読む用途
 - `json`: 結果オブジェクトの配列。`jq` に流す用途
 
-カラムは NRQL の `SELECT` の並び順で出ます。`FACET` などで行ごとにカラムが欠ける場合は
+カラムは New Relic が返した並び順で出ます（`SELECT` の順とは限りません）。`FACET` などで行ごとにカラムが欠ける場合は
 全行の和集合を取り、欠けたセルは空にします。
 
 ```console
 nrql -no-header "SELECT uniques(host) FROM Transaction" | sort
 nrql -format json "SELECT average(duration) FROM Transaction TIMESERIES" | jq '.[0]'
 ```
+
+### イベント型・属性の調べ方
+
+どんな属性があるかはアカウント・agent の設定・カスタム属性で変わるので、実データに聞きます。
+
+```console
+# イベント型の一覧
+nrql "SHOW EVENT TYPES SINCE 1 day ago"
+# 属性名と型（type / key の 2 列）
+nrql "SELECT keyset() FROM Transaction SINCE 1 day ago" | grep -i duration
+```
+
+`keyset()` は数千行になることがあるので（Transaction で 5,800 行ほどの例がある）、`grep` で絞って使います。
+
+構文と標準の属性は公式ドキュメントが正本です。
+
+- NRQL の構文: <https://docs.newrelic.com/docs/nrql/nrql-syntax-clauses-functions/>
+- 標準の属性（attribute dictionary）: <https://docs.newrelic.com/attribute-dictionary/>
 
 ## 仕組みと制約
 
