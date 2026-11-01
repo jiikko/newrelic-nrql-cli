@@ -186,13 +186,13 @@ func (e *profileDataError) Unwrap() error { return e.err }
 // cookieClientForProfile は指定プロファイルのセッションでクライアントを作る。
 // New Relic 宛てのものが 1 つも無ければ profileWithoutSessionError（自動検出時は次の候補へ進む合図）。
 func cookieClientForProfile(ep endpoints, host, profile string, timeoutSeconds int) (*client, error) {
-	res, err := extractCookiesFn(profile)
+	res, err := extractCookiesFn(profile, host)
 	if err != nil {
 		return nil, err
 	}
 	header, n := buildCookieHeader(res.Cookies, host)
 	if n == 0 {
-		// 🚨 「セッションが無い」に化けさせない: 全件の復号失敗（鍵違い）・-wal を読めない、は記録して飛ばす。
+		// 🚨 「セッションが無い」に化けさせない: host 宛ての行の全件の復号失敗（鍵違い）・-wal を読めない、は記録して飛ばす。
 		if derr := res.Diagnose(host + " 宛ての Cookie "); derr != nil {
 			return nil, classifyReadError(derr)
 		}

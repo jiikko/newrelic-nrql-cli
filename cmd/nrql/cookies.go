@@ -45,15 +45,16 @@ func sweepStaleCookieDirs() { ws.SweepStaleTempDirs() }
 // runAllCleanups は登録済みの一時コピーをすべて消す。
 func runAllCleanups() { ws.RunAllCleanups() }
 
-// extractCookies は指定プロファイルから全 Cookie を復号して返す。
-func extractCookies(profile string) (chromecookie.Result, error) {
+// extractCookies は指定プロファイルから、host 宛てに送られうる Cookie だけを復号して返す
+// （他サイトのセッション Cookie は読まない。chromecookie.ReadCookiesForHost が host_key の完全一致で絞る）。
+func extractCookies(profile, host string) (chromecookie.Result, error) {
 	sweepStaleCookieDirs() // ③: 前回の実行が強制終了で残したものを先に片付ける
 
 	password, err := chromecookie.KeychainPassword()
 	if err != nil {
 		return chromecookie.Result{}, err // EnvError = 環境エラー（プロファイルに依存しない）
 	}
-	return readProfileCookies(profile, password)
+	return readProfileCookies(profile, host, password)
 }
 
 // readProfileCookies は Keychain から得たパスワードで、プロファイルの Cookie DB を読んで復号する。
@@ -64,10 +65,10 @@ func extractCookies(profile string) (chromecookie.Result, error) {
 //   - 読めない・壊れた DB（chromecookie.ReadError）: profileDataError（記録して飛ばす）
 //   - それ以外（作業領域の異常 = chromecookie.EnvError など）: そのまま（即座に返す）
 //
-// 目的の Cookie が無かったときの原因（全件の復号失敗・-wal を読めない）は、
+// 目的の Cookie が無かったときの原因（host 宛ての行の全件の復号失敗・-wal を読めない）は、
 // cookieClientForProfile が戻り値の Result.Diagnose で確かめる。
-func readProfileCookies(profile string, password []byte) (chromecookie.Result, error) {
-	res, err := ws.ReadCookies(profile, password)
+func readProfileCookies(profile, host string, password []byte) (chromecookie.Result, error) {
+	res, err := ws.ReadCookiesForHost(profile, password, host)
 	if err != nil {
 		return chromecookie.Result{}, classifyReadError(err)
 	}

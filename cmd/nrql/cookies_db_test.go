@@ -46,8 +46,8 @@ func clientFor(profile string) (*client, error) {
 func TestCookieReadFailureClassification(t *testing.T) {
 	orig := extractCookiesFn
 	t.Cleanup(func() { extractCookiesFn = orig })
-	extractCookiesFn = func(profile string) (chromecookie.Result, error) {
-		return readProfileCookies(profile, []byte(testPassword))
+	extractCookiesFn = func(profile, host string) (chromecookie.Result, error) {
+		return readProfileCookies(profile, host, []byte(testPassword))
 	}
 
 	t.Run("Cookie DB が無いのはセッション無し（黙って飛ばす）", func(t *testing.T) {
@@ -144,6 +144,57 @@ func TestCookieReadFailureClassification(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "フルディスクアクセス") || !strings.Contains(err.Error(), "パーミッション") {
 			t.Errorf("フルディスクアクセスとパーミッションの両方の案内が無い: %v", err)
+		}
+	})
+}
+
+// 他サイトのセッション Cookie を復号しない: readProfileCookies は host 宛てに送られうる host_key の行だけを読む。
+// 除外される行も正しい鍵で暗号化してあるので、絞らなければ結果に現れる。
+func TestReadProfileCookiesReadsOnlyHostCookies(t *testing.T) {
+	home := isolateCookieIO(t)
+	enc := func(plain, host string) []byte { return chromecookietest.Encrypt(t, testPassword, plain, host) }
+	makeCookieDB(t, home, "Default", 24, []fakeCookieRow{
+		{Host: ".newrelic.com", Name: "session", Enc: enc("S", ".newrelic.com")},
+		{Host: "notnewrelic.com", Name: "lookalike", Enc: enc("N", "notnewrelic.com")},
+		{Host: ".slack.com", Name: "d", Enc: enc("SLACK", ".slack.com")},
+	})
+	res, err := readProfileCookies("Default", "one.newrelic.com", []byte(testPassword))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Cookies) != 1 || res.Cookies[0].Host != ".newrelic.com" || res.Cookies[0].Name != "session" {
+		t.Errorf("New Relic 宛ての Cookie だけを返すべき: %+v", res.Cookies)
+	}
+}
+
+// cookieClientForProfile が送信先の host を取り出し口へ渡していること。
+func TestCookieClientPassesHostToExtract(t *testing.T) {
+	orig := extractCookiesFn
+	t.Cleanup(func() { extractCookiesFn = orig })
+	extractCookiesFn = func(profile, host string) (chromecookie.Result, error) {
+		return readProfileCookies(profile, host, []byte(testPassword))
+	}
+
+	t.Run("host-only の one.newrelic.com の Cookie を読む（送信先を取り違えると読まれない）", func(t *testing.T) {
+		home := isolateCookieIO(t)
+		makeCookieDB(t, home, "Default", 24, []fakeCookieRow{
+			{Host: "one.newrelic.com", Name: "session", Enc: chromecookietest.Encrypt(t, testPassword, "H", "one.newrelic.com")},
+		})
+		c, err := clientFor("Default")
+		if err != nil || !strings.Contains(c.cookie, "session=H") {
+			t.Errorf("one.newrelic.com の host-only の Cookie を読めない: err=%v", err)
+		}
+	})
+
+	t.Run("他サイトの行しか無く鍵違いでも、復号失敗ではなくセッション無し", func(t *testing.T) {
+		home := isolateCookieIO(t)
+		makeCookieDB(t, home, "Default", 24, []fakeCookieRow{
+			{Host: ".slack.com", Name: "d", Enc: chromecookietest.Encrypt(t, "wrong", "x", ".slack.com")},
+		})
+		_, err := clientFor("Default")
+		var absent *profileWithoutSessionError
+		if !errors.As(err, &absent) {
+			t.Errorf("他サイトの行を復号しようとした（セッション無しになるべき）: %T %v", err, err)
 		}
 	})
 }

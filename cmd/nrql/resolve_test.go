@@ -26,7 +26,7 @@ func TestResolveClientPriority(t *testing.T) {
 	var asked []string
 	restore := func() func() {
 		orig := extractCookiesFn
-		extractCookiesFn = func(profile string) (chromecookie.Result, error) {
+		extractCookiesFn = func(profile, host string) (chromecookie.Result, error) {
 			asked = append(asked, profile)
 			return chromecookie.Result{Cookies: []cookieEntry{{Host: ".newrelic.com", Name: "session", Value: "v-" + profile}}}, nil
 		}
@@ -93,7 +93,7 @@ func TestResolveClientPriority(t *testing.T) {
 	t.Run("対象ホスト宛てのセッションが無ければエラー", func(t *testing.T) {
 		t.Setenv("NEW_RELIC_API_KEY", "")
 		orig := extractCookiesFn
-		extractCookiesFn = func(profile string) (chromecookie.Result, error) {
+		extractCookiesFn = func(profile, host string) (chromecookie.Result, error) {
 			return chromecookie.Result{Cookies: []cookieEntry{{Host: "example.com", Name: "x", Value: "y"}}}, nil
 		}
 		defer func() { extractCookiesFn = orig }()
@@ -218,7 +218,7 @@ func (nopCloser) Close() error { return nil }
 // 「フラグは在るが効いていない」を検出するため、クライアントの Timeout を直接見る。
 func TestTimeoutReachesClient(t *testing.T) {
 	orig := extractCookiesFn
-	extractCookiesFn = func(profile string) (chromecookie.Result, error) {
+	extractCookiesFn = func(profile, host string) (chromecookie.Result, error) {
 		return chromecookie.Result{Cookies: []cookieEntry{{Host: ".newrelic.com", Name: "session", Value: "v"}}}, nil
 	}
 	defer func() { extractCookiesFn = orig }()
@@ -382,7 +382,7 @@ func TestResolveClientAutoStopsOnEnvironmentErrors(t *testing.T) {
 	t.Run("環境エラーは 1 回で返す", func(t *testing.T) {
 		var asked []string
 		envErr := errors.New("Keychain から暗号化キーを取得できませんでした（テスト）")
-		extractCookiesFn = func(profile string) (chromecookie.Result, error) {
+		extractCookiesFn = func(profile, host string) (chromecookie.Result, error) {
 			asked = append(asked, profile)
 			return chromecookie.Result{}, envErr
 		}
@@ -397,7 +397,7 @@ func TestResolveClientAutoStopsOnEnvironmentErrors(t *testing.T) {
 
 	t.Run("セッションの無いプロファイルは飛ばす", func(t *testing.T) {
 		var asked []string
-		extractCookiesFn = func(profile string) (chromecookie.Result, error) {
+		extractCookiesFn = func(profile, host string) (chromecookie.Result, error) {
 			asked = append(asked, profile)
 			switch profile {
 			case "Default":
@@ -424,7 +424,7 @@ func TestResolveClientAutoStopsOnEnvironmentErrors(t *testing.T) {
 // mustCookieDBMissing は本物の読み取り経路（readProfileCookies）が返す「DB が無い」エラーを取る。
 func mustCookieDBMissing(t *testing.T, profile string) error {
 	t.Helper()
-	_, err := readProfileCookies(profile, []byte("k"))
+	_, err := readProfileCookies(profile, "one.newrelic.com", []byte("k"))
 	if err == nil {
 		t.Fatalf("隔離した HOME に Cookie DB は無いはず（%s）", profile)
 	}
@@ -441,7 +441,7 @@ func TestCookieDBSourcePathSeparatesUnreadableFromMissing(t *testing.T) {
 	base := filepath.Dir(chromecookietest.ProfileDir(home, "Default"))
 
 	// 無いプロファイルは「セッションが無い」型。
-	_, err := readProfileCookies("Profile 9", []byte("k"))
+	_, err := readProfileCookies("Profile 9", "one.newrelic.com", []byte("k"))
 	var absent *profileWithoutSessionError
 	if !errors.As(err, &absent) {
 		t.Fatalf("DB の無いプロファイルは profileWithoutSessionError であるべき: %T %v", err, err)
@@ -460,7 +460,7 @@ func TestCookieDBSourcePathSeparatesUnreadableFromMissing(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(prof, 0o700) }) // t.TempDir の削除が失敗しないように戻す
 
-	_, err = readProfileCookies("Default", []byte("k"))
+	_, err = readProfileCookies("Default", "one.newrelic.com", []byte("k"))
 	if err == nil {
 		t.Fatal("stat できないのに成功した")
 	}
@@ -491,7 +491,7 @@ func TestResolveClientAutoSkipsBrokenProfilesButReportsThem(t *testing.T) {
 	}
 
 	t.Run("壊れた DB は飛ばして次を使う", func(t *testing.T) {
-		extractCookiesFn = func(profile string) (chromecookie.Result, error) {
+		extractCookiesFn = func(profile, host string) (chromecookie.Result, error) {
 			if profile == "Profile 2" {
 				return chromecookie.Result{Cookies: []cookieEntry{{Host: ".newrelic.com", Name: "session", Value: "v"}}}, nil
 			}
@@ -507,7 +507,7 @@ func TestResolveClientAutoSkipsBrokenProfilesButReportsThem(t *testing.T) {
 	})
 
 	t.Run("見つからなければ飛ばした理由を添える", func(t *testing.T) {
-		extractCookiesFn = func(profile string) (chromecookie.Result, error) {
+		extractCookiesFn = func(profile, host string) (chromecookie.Result, error) {
 			if profile == "Profile 1" {
 				return chromecookie.Result{}, mustCookieDBMissing(t, profile) // DB が無いだけ（理由は添えない）
 			}
@@ -529,7 +529,7 @@ func TestResolveClientAutoSkipsBrokenProfilesButReportsThem(t *testing.T) {
 	})
 
 	t.Run("環境エラーにはプロファイル名を付ける", func(t *testing.T) {
-		extractCookiesFn = func(profile string) (chromecookie.Result, error) {
+		extractCookiesFn = func(profile, host string) (chromecookie.Result, error) {
 			return chromecookie.Result{}, errors.New("Keychain から暗号化キーを取得できませんでした")
 		}
 		_, err := resolveClient(config{region: "us", profile: profileAuto})
@@ -573,7 +573,9 @@ func TestResolveClientAutoSkipsPermissionDeniedProfiles(t *testing.T) {
 	}
 	t.Setenv("NEW_RELIC_API_KEY", "")
 	orig := extractCookiesFn
-	extractCookiesFn = func(profile string) (chromecookie.Result, error) { return readProfileCookies(profile, []byte("k")) }
+	extractCookiesFn = func(profile, host string) (chromecookie.Result, error) {
+		return readProfileCookies(profile, host, []byte("k"))
+	}
 	defer func() { extractCookiesFn = orig }()
 
 	// lock は プロファイルのディレクトリを 0000 にする（t.Cleanup で戻す）。
@@ -635,7 +637,9 @@ func TestExplicitProfilePermissionErrorHasHint(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 	orig := extractCookiesFn
-	extractCookiesFn = func(profile string) (chromecookie.Result, error) { return readProfileCookies(profile, []byte("k")) }
+	extractCookiesFn = func(profile, host string) (chromecookie.Result, error) {
+		return readProfileCookies(profile, host, []byte("k"))
+	}
 	defer func() { extractCookiesFn = orig }()
 
 	_, err := resolveClient(config{region: "us", profile: "Default"})
