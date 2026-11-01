@@ -3,7 +3,7 @@ module github.com/jiikko/newrelic-nrql-cli
 go 1.25.0
 
 require (
-	github.com/jiikko/dotfiles/src/chromecookie v0.0.0-20261101095146-849ed5a79ed1
+	github.com/jiikko/dotfiles/src/chromecookie v0.0.0-20261101103315-bafd5d219ef8
 	github.com/mattn/go-runewidth v0.0.30
 	gopkg.in/yaml.v3 v3.0.1
 )
